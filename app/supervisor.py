@@ -123,6 +123,7 @@ def build_procs():
             "-segment_format_options", "movflags=+faststart",   # índice no começo: abre mais rápido na Revisão
             os.path.join(REC, cam, "%Y%m%d_%H%M%S.mp4")]))
     procs.append(Proc("manutencao", PYX + [os.path.join(HERE, "gravador.py")]))
+    procs.append(Proc("prateleiras", PYX + [os.path.join(HERE, "prateleiras.py")]))   # zonas: o que saiu da prateleira
     return procs
 
 def reconfigurar():

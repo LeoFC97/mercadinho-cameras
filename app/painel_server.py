@@ -46,6 +46,40 @@ def ia_srv():
         _ia = ia.IA(HERE, REC, DADOS, _cams_config)
     return _ia
 
+def _prat_eventos(dia):
+    """Movimentações das prateleiras no dia, cruzadas com as vendas (o item que saiu foi pago?)."""
+    import prateleiras as P
+    evs = P.eventos_dia(dia.strftime("%Y-%m-%d"))
+    classes = {}
+    try: classes = {c["id"]: c for c in ia_srv().classes()}
+    except Exception: pass
+    vendas, vendas_ok, erro = [], False, ""
+    if evs:
+        try:
+            vendas = [i for i in m4u().vendas_cache(dia)["itens"] if i.get("t")]
+            vendas_ok = True
+        except Exception as e:
+            erro = str(e)
+    norm = lambda s: re.sub(r"\s+", " ", (s or "").lower()).strip()
+    for e in evs:
+        e["suspeito"] = False
+        perto = [v for v in vendas if e["inicio"] - 120 <= v["t"] <= e["fim"] + 600]
+        e["vendas_perto"] = [{"t": v["t"], "produto": v["produto"], "qtd": v["qtd"]} for v in perto[:12]]
+        for m in e.get("mudancas", []):
+            c = classes.get(m.get("classe")) if m.get("classe") is not None else None
+            if c:
+                m["nome"] = m.get("nome") or c["nome"]
+                m["barras"] = m.get("barras") or c.get("barras", "")
+            if not vendas_ok:
+                m["paga"] = None; continue
+            b, n = m.get("barras") or "", norm(m.get("nome"))
+            m["paga"] = any((b and v.get("barras") == b) or (n and (n in norm(v["produto"]) or norm(v["produto"]) in n))
+                            for v in perto)
+            if m["tipo"] in ("retirada", "mexido") and not m["paga"]:
+                e["suspeito"] = True
+    return {"dia": dia.strftime("%Y-%m-%d"), "eventos": sorted(evs, key=lambda e: e["inicio"], reverse=True),
+            "vendas_ok": vendas_ok, "vendas_erro": erro}
+
 def _dia_param(path):
     from urllib.parse import urlparse, parse_qs
     from datetime import date, datetime as _dt
@@ -240,6 +274,8 @@ class Handler(SimpleHTTPRequestHandler):
             return self._oc_get(clean)
         if clean.startswith("/api/ia/"):
             return self._ia_get(clean)
+        if clean.startswith("/api/prateleiras"):
+            return self._prat_get(clean)
         return super().do_GET()
     # ---- análise movimento x vendas, ocorrências e clipes ----
     def _oc_get(self, clean):
@@ -333,6 +369,55 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json(200, ia.rotular(parts[3], req))
             if rec == "exportar":
                 return self._json(200, ia.exportar())
+            return self._json(404, {"erro": "não encontrado"})
+        except KeyError as e:
+            return self._json(404, {"erro": str(e).strip("'\"")})
+        except ValueError as e:
+            return self._json(400, {"erro": str(e)})
+        except Exception as e:
+            return self._json(500, {"erro": f"erro inesperado: {e}"})
+    # ---- prateleiras: zonas de interesse, catálogo e movimentações ----
+    def _prat_get(self, clean):
+        import prateleiras as P
+        try:
+            if clean == "/api/prateleiras":
+                c = P.config()
+                st = {}
+                try: st = json.load(open(P.ESTADO, encoding="utf-8"))
+                except Exception: pass
+                return self._json(200, {"zonas": c["zonas"], "refs": c["refs"], "cameras": _cams_config(),
+                                        "analisado_ate": st, "log": _tail(os.path.join(LOGD, "prateleiras.log"), 15)})
+            if clean.startswith("/api/prateleiras/img/"):
+                p = P.caminho_img(clean.rsplit("/", 1)[1])
+                if not p: return self._json(404, {"erro": "imagem não encontrada"})
+                return self._arquivo(p, "image/jpeg", cache="no-cache")
+            if clean == "/api/prateleiras/eventos":
+                dia = _dia_param(self.path)
+                return self._json(200, _prat_eventos(dia))
+            return self._json(404, {"erro": "não encontrado"})
+        except ValueError as e:
+            return self._json(400, {"erro": str(e)})
+        except Exception as e:
+            return self._json(500, {"erro": f"erro inesperado: {e}"})
+    def _prat_post(self, clean):
+        import prateleiras as P
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+            req = json.loads(self.rfile.read(n) or b"{}") if n else {}
+            parts = clean.strip("/").split("/")          # api, prateleiras, recurso, ...
+            if parts[2] == "zonas":
+                if len(parts) == 3: return self._json(200, P.salvar_zona(req))
+                if len(parts) == 5 and parts[4] == "apagar":
+                    P.apagar_zona(parts[3]); return self._json(200, {"ok": True})
+            if parts[2] == "referencia":
+                return self._json(200, P.foto_referencia(req.get("cam")))
+            if parts[2] == "reanalisar":
+                d = str(req.get("dia") or "")
+                if not DAY_RE.match(d): raise ValueError("dia inválido")
+                P.reanalisar(d); return self._json(200, {"ok": True})
+            if parts[2] == "eventos" and len(parts) == 5:
+                if not DAY_RE.match(parts[3]): raise ValueError("dia inválido")
+                return self._json(200, P.marcar_evento(parts[3], parts[4], req))
             return self._json(404, {"erro": "não encontrado"})
         except KeyError as e:
             return self._json(404, {"erro": str(e).strip("'\"")})
@@ -436,6 +521,8 @@ class Handler(SimpleHTTPRequestHandler):
             return self._oc_post(clean)
         if clean.startswith("/api/ia/"):
             return self._ia_post(clean)
+        if clean.startswith("/api/prateleiras/"):
+            return self._prat_post(clean)
         if clean in ("/api/sistema/reconfigurar", "/api/sistema/reiniciar", "/api/sistema/atualizar"):
             # deixa um pedido para o supervisor (que roda como SYSTEM) — sem precisar de administrador
             try:
