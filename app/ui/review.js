@@ -1,5 +1,6 @@
 // review.js — modo Revisão: as 4 câmeras andando juntas no passado.
 // Lê os segmentos gravados (/rec) e sincroniza o playback por horário (epoch).
+import { DiagnosticoModal } from './diagnostico.js';
 import { api, Modal, EscolhaCameras, EstadoClipe, useClipe, lerAutor, salvarAutor, horaParaEpoch, brl, STATUS_COR, STATUS_ROT } from './comum.js';
 const { useState, useEffect, useRef, useCallback, useMemo } = React;
 const html = htm.bind(React.createElement);
@@ -209,6 +210,8 @@ export function ReviewView({ cameras, nameOf, go2rtc, onExit, jump, extraButtons
 
   // loop de sincronização (5 Hz)
   const waitSince = useRef(0);   // desde quando o mestre está carregando/travado
+  const esperas = useRef([]);     // instantes em que a reprodução teve de esperar carregar
+  const avisouLento = useRef(false);
   useEffect(() => {
     if (!range) return;
     const id = setInterval(() => {
@@ -239,6 +242,13 @@ export function ReviewView({ cameras, nameOf, go2rtc, onExit, jump, extraButtons
             // Só anda sozinho se o mestre ficar travado demais (arquivo com problema).
             const now = performance.now();
             if (!waitSince.current) waitSince.current = now;
+            if (!waitSince.current || now - waitSince.current < 250) {
+              esperas.current.push(now); esperas.current = esperas.current.filter(x => now - x < 60000);
+              if (esperas.current.length >= 4 && !focoRef.current && !avisouLento.current) {
+                avisouLento.current = true;
+                setAviso('Está carregando devagar. Clique numa câmera para ver só ela, ou use ⓘ Diagnóstico para ver o motivo.');
+              }
+            }
             if (now - waitSince.current > 4000) t = t + 0.2 * speedRef.current;
             else hold = now - waitSince.current > 300;   // as outras esperam junto (não disparam na frente)
           }
@@ -341,6 +351,7 @@ export function ReviewView({ cameras, nameOf, go2rtc, onExit, jump, extraButtons
           <button onClick=${() => changeDay(1)}>▶</button>
         </div>
         <div class="spacer"></div>
+        <button class="iconbtn" style=${{width:'auto',padding:'0 11px',fontSize:'12.5px',fontWeight:600}} title="Por que está travando? Mede a gravação, o notebook e a sua conexão" onClick=${() => pausarE('diag')}>ⓘ Diagnóstico</button>
         ${extraButtons || null}
         ${manifest && manifest.disk ? html`<div class="stat">disco <b>${manifest.disk.used_gb}</b>/${manifest.disk.cap_gb} GB</div>` : null}
         <div class="clock">${range ? hhmmss(dispT) : '--:--:--'}</div>
@@ -379,6 +390,10 @@ export function ReviewView({ cameras, nameOf, go2rtc, onExit, jump, extraButtons
           onIr=${(e) => { seekTo(e.inicio - 5); }} onClose=${() => setListaSusp(false)} />` : null}
       ${modal === 'marcar' ? html`<${MarcarModal} t=${tRef.current} cameras=${cameras} nameOf=${nameOf} analise=${analise}
           onClose=${() => setModal(null)} onFeito=${(o) => { setModal(null); carregarOcorrs(day); setAviso('Ocorrência marcada' + (o.clipe ? ' — gerando o clipe' : '')); }} />` : null}
+      ${modal === 'diag' ? html`<${DiagnosticoModal} cameras=${cameras} nameOf=${nameOf} onClose=${() => setModal(null)} onToast=${setAviso}
+          qualidade=${() => { let total = 0, perdidos = 0; for (const c of cameras) { const v = vids.current[c.id];
+            try { const q = v && v.getVideoPlaybackQuality && v.getVideoPlaybackQuality(); if (q) { total += q.totalVideoFrames; perdidos += q.droppedVideoFrames; } } catch {} }
+            return { total, perdidos }; }} />` : null}
       ${modal === 'clipe' ? html`<${ClipeModal} t=${tRef.current} cameras=${cameras} nameOf=${nameOf} onClose=${() => setModal(null)} />` : null}
     </div>`;
 }

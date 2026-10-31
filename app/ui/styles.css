@@ -393,3 +393,13 @@ body{
   .pr-centro{min-height:60vh}
   .pr-dir{flex:0 0 auto;border-left:0;border-top:1px solid var(--line)}
 }
+
+/* ---------- diagnóstico ---------- */
+.dg-sec{display:flex;flex-direction:column;gap:8px;margin-bottom:14px}
+.dg-ach{font-size:13px;line-height:1.45;padding:8px 10px;border-radius:var(--radius-sm);background:var(--panel);border:1px solid var(--line)}
+.dg-ach.grave{background:rgba(251,191,36,.08);border-color:rgba(251,191,36,.4)}
+.dg-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.dg-grid div{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius-sm);padding:8px 10px}
+.dg-grid small{display:block;color:var(--muted);font-size:11px}.dg-grid b{font-size:16px}
+.dg-ruim{color:#fbbf24;font-weight:700}
+@media (max-width: 700px){.dg-grid{grid-template-columns:repeat(2,1fr)}}

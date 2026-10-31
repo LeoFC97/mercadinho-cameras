@@ -24,6 +24,18 @@ GO2RTC = os.path.join(HERE, "go2rtc.exe" if IS_WIN else "go2rtc")
 PORT = int(os.environ.get("PAINEL_PORTA", "8099"))
 SEG = int(float(os.environ.get("SEG_SECONDS", "12")))
 SUF = "_sub" if os.environ.get("REC_STREAM", "sub") == "sub" else ""
+
+def rec_suf():
+    """Lê o REC_STREAM atual do gravador.env (a cada reinício: o painel pode trocar entre sub e HD)."""
+    v = os.environ.get("REC_STREAM", "sub")
+    try:
+        for line in open(os.path.join(HERE, "gravador.env"), encoding="utf-8"):
+            line = line.split("#", 1)[0].strip()
+            if line.startswith("REC_STREAM="):
+                v = line.split("=", 1)[1].strip()
+    except OSError:
+        pass
+    return "" if v == "main" else "_sub"
 NOWIN = 0x08000000 if IS_WIN else 0   # CREATE_NO_WINDOW
 
 def log(msg):
@@ -115,10 +127,11 @@ def build_procs():
         if go2rtc_ok(): break
         time.sleep(1)
     procs.append(Proc("painel", PYX + [os.path.join(HERE, "painel_server.py"), str(PORT)]))
+    suf = rec_suf()
     for cam in cams():
         os.makedirs(os.path.join(REC, cam), exist_ok=True)
         procs.append(Proc("grava_" + cam, [FFMPEG, "-nostdin", "-loglevel", "error", "-rtsp_transport", "tcp",
-            "-i", f"rtsp://127.0.0.1:8554/{cam}{SUF}", "-an", "-c", "copy", "-f", "segment",
+            "-i", f"rtsp://127.0.0.1:8554/{cam}{suf}", "-an", "-c", "copy", "-f", "segment",
             "-segment_time", str(SEG), "-reset_timestamps", "1", "-strftime", "1",
             "-segment_format_options", "movflags=+faststart",   # índice no começo: abre mais rápido na Revisão
             os.path.join(REC, cam, "%Y%m%d_%H%M%S.mp4")]))

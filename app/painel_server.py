@@ -265,6 +265,13 @@ class Handler(SimpleHTTPRequestHandler):
         if clean == "/api/disk":
             try: return self._json(200, disk_report())
             except Exception as e: return self._json(500, {"erro": str(e)})
+        if clean == "/api/ping":
+            return self._json(200, {"t": time.time()})
+        if clean == "/api/diagnostico":
+            try:
+                import diagnostico
+                return self._json(200, diagnostico.diagnostico(HERE, REC, _cams_config()))
+            except Exception as e: return self._json(500, {"erro": str(e)})
         if clean == "/api/sistema":
             try: return self._json(200, sistema_status())
             except Exception as e: return self._json(500, {"erro": str(e)})
@@ -523,6 +530,20 @@ class Handler(SimpleHTTPRequestHandler):
             return self._ia_post(clean)
         if clean.startswith("/api/prateleiras/"):
             return self._prat_post(clean)
+        if clean == "/api/sistema/gravacao":
+            # troca o que é gravado: "sub" (leve) ou "main" (HD) — vale depois do reinício
+            try:
+                import diagnostico
+                n = int(self.headers.get("Content-Length") or 0)
+                req = json.loads(self.rfile.read(n) or b"{}") if n else {}
+                v = req.get("stream")
+                if v not in ("sub", "main"): return self._json(400, {"erro": "use sub ou main"})
+                diagnostico.definir_env(HERE, "REC_STREAM", v)
+                os.makedirs(PEDIDOS, exist_ok=True)
+                open(os.path.join(PEDIDOS, "reiniciar"), "w").write(str(time.time()))
+                return self._json(200, {"ok": True, "rec_stream": v})
+            except Exception as e:
+                return self._json(500, {"erro": str(e)})
         if clean in ("/api/sistema/reconfigurar", "/api/sistema/reiniciar", "/api/sistema/atualizar"):
             # deixa um pedido para o supervisor (que roda como SYSTEM) — sem precisar de administrador
             try:
