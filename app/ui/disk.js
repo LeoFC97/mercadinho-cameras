@@ -29,6 +29,14 @@ export function DiskView({ cameras, nameOf, onExit, onToast }) {
   const [busy, setBusy] = useState(false);
   const [olderDays, setOlderDays] = useState(3);
   const [open, setOpen] = useState({});   // dia -> mostra câmeras
+  const [sys, setSys] = useState(null);
+  const [showLog, setShowLog] = useState(false);
+  const loadSys = useCallback(async () => { try { setSys(await api('/api/sistema?_=' + Date.now())); } catch {} }, []);
+  useEffect(() => { loadSys(); const id = setInterval(loadSys, 5000); return () => clearInterval(id); }, [loadSys]);
+  const pedir = async (what) => {
+    try { await api('/api/sistema/' + what, { method: 'POST' }); onToast(what === 'reconfigurar' ? 'Pedido enviado: procurando câmeras e reiniciando (1–2 min)…' : what === 'atualizar' ? 'Pedido enviado: baixando a versão nova do GitHub e reiniciando…' : 'Pedido enviado: reiniciando o sistema…'); setShowLog(true); loadSys(); }
+    catch (e) { onToast('Erro: ' + e.message); }
+  };
 
   const load = useCallback(async () => {
     try { setData(await api('/api/disk?_=' + Date.now())); setErr(''); }
@@ -66,7 +74,7 @@ export function DiskView({ cameras, nameOf, onExit, onToast }) {
     <div style=${{ height: '100%', display: 'flex', flexDirection: 'column', background: 'var(--bg)' }}>
       <div class="topbar">
         <button class="iconbtn" title="Voltar ao ao vivo" onClick=${onExit}>${I.live}</button>
-        <div class="brand"><h1>Disco</h1><small>gravações</small></div>
+        <div class="brand"><h1>Disco</h1><small>gravações · sistema</small></div>
         <div class="spacer"></div>
         ${disk ? html`<div class="stat">gravações <b>${disk.used_gb} GB</b> · teto ${disk.cap_gb} GB · livre <b>${disk.free_gb} GB</b></div>` : null}
         <button class="iconbtn" title="Atualizar" onClick=${load}>${I.refresh}</button>
@@ -75,6 +83,26 @@ export function DiskView({ cameras, nameOf, onExit, onToast }) {
       <div class="stage" style=${{ overflow: 'auto' }}>
         ${err ? html`<div class="offbox" style=${{position:'static',height:'100%'}}><span>${err}</span></div>` : null}
         ${!err && !data ? html`<div class="offbox" style=${{position:'static',height:'100%'}}><div class="spin"></div></div>` : null}
+        ${sys ? html`
+          <div class="dpanel">
+            <div class="dhead">
+              <div>
+                <div class="dtitle">Sistema</div>
+                <div class="dsub">${(sys.cameras || []).length} câmera(s) configurada(s)${sys.status?.atualizado ? ' · supervisor ativo em ' + sys.status.atualizado.slice(11) : ''}${sys.versao ? ' · versão ' + sys.versao : ''}${sys.pendentes?.length ? ' · processando pedido: ' + sys.pendentes.join(', ') + '…' : ''}</div>
+              </div>
+              <span class="spacer"></span>
+              <${Danger} small label="Atualizar do GitHub" onConfirm=${() => pedir('atualizar')} />
+              <${Danger} small label="Reconfigurar câmeras" onConfirm=${() => pedir('reconfigurar')} />
+              <${Danger} small label="Reiniciar sistema" onConfirm=${() => pedir('reiniciar')} />
+            </div>
+            <div class="procs">
+              ${Object.entries(sys.status?.processos || {}).map(([n, p]) => html`<span key=${n} class=${'proc ' + (p.rodando ? 'up' : 'down')} title=${'reinícios: ' + p.reinicios}><i></i>${n.replace('grava_', '')}</span>`)}
+            </div>
+            <div class="dsub" style=${{marginTop:'8px',marginBottom:0}}>
+              <a href="#" onClick=${e => { e.preventDefault(); setShowLog(v => !v); }} style=${{color:'var(--accent)'}}>${showLog ? 'esconder' : 'ver'} registro da última reconfiguração</a>
+            </div>
+            ${showLog ? html`<pre class="dlog">${[...(sys.atualizar_log || []).slice(-8), ...(sys.reconfigurar_log || [])].join('\n') || '(ainda não houve reconfiguração pelo painel)'}</pre>` : null}
+          </div>` : null}
         ${data ? html`
           <div class="dpanel">
             <div class="dhead">

@@ -133,6 +133,31 @@ def disk_delete(req):
                 _save_index(c, fd, idx)
     return {"freed_bytes": freed, "files": files}
 
+PEDIDOS = os.path.join(HERE, "pedidos")
+LOGD = os.path.join(HERE, "logs")
+
+def _tail(path, n=40):
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2); size = f.tell(); f.seek(max(0, size - 16000))
+            lines = f.read().decode("utf-8", "replace").splitlines()
+        return lines[-n:]
+    except OSError:
+        return []
+
+def sistema_status():
+    """status.json do supervisor + pedidos pendentes + fim dos logs de reconfiguração/supervisor."""
+    try: st = json.load(open(os.path.join(LOGD, "status.json"), encoding="utf-8"))
+    except Exception: st = {}
+    pend = [n for n in ("atualizar", "reconfigurar", "reiniciar") if os.path.exists(os.path.join(PEDIDOS, n))]
+    cams = _cams_config()
+    try: versao = open(os.path.join(HERE, "versao.txt")).read().strip()
+    except OSError: versao = ""
+    return {"status": st, "pendentes": pend, "cameras": cams, "versao": versao[:7],
+            "atualizar_log": _tail(os.path.join(LOGD, "atualizar.log"), 30),
+            "reconfigurar_log": _tail(os.path.join(LOGD, "reconfigurar.log"), 60),
+            "supervisor_log": _tail(os.path.join(LOGD, "supervisor.log"), 12)}
+
 class Handler(SimpleHTTPRequestHandler):
     extensions_map = {**SimpleHTTPRequestHandler.extensions_map,
         ".js": "text/javascript", ".mjs": "text/javascript", ".css": "text/css",
@@ -151,12 +176,25 @@ class Handler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
     def do_GET(self):
-        if self.path.split("?")[0] == "/api/disk":
+        clean = self.path.split("?")[0]
+        if clean == "/api/disk":
             try: return self._json(200, disk_report())
+            except Exception as e: return self._json(500, {"erro": str(e)})
+        if clean == "/api/sistema":
+            try: return self._json(200, sistema_status())
             except Exception as e: return self._json(500, {"erro": str(e)})
         return super().do_GET()
     def do_POST(self):
-        if self.path.split("?")[0] == "/api/disk/delete":
+        clean = self.path.split("?")[0]
+        if clean in ("/api/sistema/reconfigurar", "/api/sistema/reiniciar", "/api/sistema/atualizar"):
+            # deixa um pedido para o supervisor (que roda como SYSTEM) — sem precisar de administrador
+            try:
+                os.makedirs(PEDIDOS, exist_ok=True)
+                open(os.path.join(PEDIDOS, clean.rsplit("/", 1)[1]), "w").write(str(time.time()))
+                return self._json(200, {"ok": True, "pedido": clean.rsplit("/", 1)[1]})
+            except Exception as e:
+                return self._json(500, {"erro": str(e)})
+        if clean == "/api/disk/delete":
             try:
                 n = int(self.headers.get("Content-Length") or 0)
                 req = json.loads(self.rfile.read(n) or b"{}")

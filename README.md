@@ -26,9 +26,9 @@ câmeras (RTSP, Wi-Fi) ──► go2rtc :1984 / :8554 ──► painel  http://<
 | `mac/` | Atalhos `.command` para rodar no Mac (uso manual, sem serviço). |
 
 ### Principais arquivos em `app/`
-- `supervisor.py` — mantém tudo de pé: go2rtc, painel, uma gravação ffmpeg por câmera e a manutenção. Reinicia o que cair e escreve `logs/status.json`.
+- `supervisor.py` — mantém tudo de pé: go2rtc, painel, uma gravação ffmpeg por câmera e a manutenção. Reinicia o que cair e escreve `logs/status.json`. Atende pedidos deixados em `pedidos/` (`atualizar`, `reconfigurar`, `reiniciar`) — é assim que o painel e os atalhos agem sem precisar de administrador — e, com `AUTO_UPDATE=1` (padrão), confere o GitHub a cada 10 min e aplica sozinho um commit novo em `app/` (nunca sobrescreve `senha.txt`, `go2rtc.yaml`, `gravador.env`, `cameras_conhecidas.json`, `ui/config.js` nem as gravações).
 - `painel_server.py` — servidor do painel. Suporta HTTP Range, necessário para o Safari/iPhone tocar as gravações, e expõe a API de disco (`GET /api/disk`, `POST /api/disk/delete`) usada pela tela Disco.
-- `reconfigurar.py` / `reconfigurar-auto.bat` — Windows: refaz a varredura, testa a senha, gera a configuração e reinicia a tarefa, em segundo plano (log em `logs\reconfigurar.log`). É o alvo do atalho "Reconfigurar câmeras".
+- `reconfigurar-auto.bat` — deixa o pedido `reconfigurar` para o supervisor (sem administrador). É o alvo do atalho "Reconfigurar câmeras". `reconfigurar.py` é a versão elevada, só necessária se o supervisor não estiver rodando.
 - `servidor_24h.py` / `servidor-24h.bat` — Windows: deixa o notebook como servidor 24h (nunca dormir/hibernar, tampa sem ação, Wi-Fi e disco sem economia de energia, Windows Update sem reinício automático). Relatório em `logs\servidor_24h.log`.
 - `gravador.py` — calcula o movimento de cada segmento e mantém só os trechos com movimento (± 2 segmentos de folga). Também gera o índice por câmera/dia e aplica o teto de disco.
 - `scan_cameras.py` → `setup_cameras.py` → `gen_config.py` — acham as câmeras na rede, testam a senha e geram o `go2rtc.yaml` e o `ui/config.js`.
@@ -77,6 +77,7 @@ Os parâmetros ficam em `gravador.env` no servidor, ou em variáveis de ambiente
 | Variável | Padrão | Função |
 |---|---|---|
 | `GRACE_HOURS` | 2 | As últimas N horas nunca são apagadas, mesmo sem movimento. |
+| `AUTO_UPDATE` / `UPDATE_EVERY_MIN` | 1 / 10 | Atualização automática a partir do GitHub (`REPO_GITHUB`, padrão `LeoFC97/mercadinho-cameras`). |
 | `MOTION_THRESHOLD` | 0.8 | Sensibilidade do movimento: maior guarda menos, menor guarda mais. |
 | `CAP_GB` / `FREE_FLOOR_GB` | 18 / 12 | Teto de disco: apaga o mais antigo antes de encher. |
 | `RETENTION_HOURS` | 72 | Idade máxima das gravações. |

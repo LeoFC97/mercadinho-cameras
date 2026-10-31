@@ -105,8 +105,10 @@ def go2rtc_ok():
     except Exception:
         return False
 
-def main():
-    log(f"supervisor iniciando ({platform.system()}) em {HERE}")
+PEDIDOS = os.path.join(HERE, "pedidos"); os.makedirs(PEDIDOS, exist_ok=True)
+
+def build_procs():
+    """Monta a lista de processos a partir do go2rtc.yaml atual."""
     procs = [Proc("go2rtc", [GO2RTC, "-config", os.path.join(HERE, "go2rtc.yaml")])]
     procs[0].ensure()
     for _ in range(60):
@@ -120,12 +122,116 @@ def main():
             "-segment_time", str(SEG), "-reset_timestamps", "1", "-strftime", "1",
             os.path.join(REC, cam, "%Y%m%d_%H%M%S.mp4")]))
     procs.append(Proc("manutencao", PYX + [os.path.join(HERE, "gravador.py")]))
+    return procs
+
+def reconfigurar():
+    """Procura as câmeras de novo, testa a senha e gera a configuração (roda como SYSTEM, lê senha.txt)."""
+    env = dict(os.environ, PYTHONIOENCODING="utf-8")
+    env.setdefault("FFPROBE", os.path.join(HERE, "bin", "ffprobe.exe" if IS_WIN else "ffprobe"))
+    lf = os.path.join(LOGD, "reconfigurar.log")
+    with open(lf, "a", encoding="utf-8") as out:
+        out.write(time.strftime("%Y-%m-%d %H:%M:%S ") + "===== reconfigurar (pelo supervisor): início =====\n"); out.flush()
+        for args in (PYX + [os.path.join(HERE, "scan_cameras.py")],
+                     PYX + [os.path.join(HERE, "setup_cameras.py"), "--senha-arquivo", os.path.join(HERE, "senha.txt")]):
+            try:
+                subprocess.run(args, cwd=HERE, stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                               env=env, timeout=600, creationflags=NOWIN)
+            except Exception as e:
+                out.write(f"erro: {e}\n")
+        out.write(time.strftime("%Y-%m-%d %H:%M:%S ") + "===== reconfigurar: fim =====\n")
+
+REPO = os.environ.get("REPO_GITHUB", "LeoFC97/mercadinho-cameras")
+AUTO_UPDATE = os.environ.get("AUTO_UPDATE", "1") == "1"
+UPDATE_EVERY = int(float(os.environ.get("UPDATE_EVERY_MIN", "10"))) * 60
+VERSAO = os.path.join(HERE, "versao.txt")          # sha do último commit instalado
+NAO_SOBRESCREVER = {"senha.txt", "go2rtc.yaml", "gravador.env", "cameras_conhecidas.json", "versao.txt", "config.js"}
+
+def _http(url, timeout=30):
+    req = urllib.request.Request(url, headers={"User-Agent": "mercadinho-cameras", "Accept": "application/vnd.github+json"})
+    return urllib.request.urlopen(req, timeout=timeout).read()
+
+def commit_remoto():
+    try:
+        return json.loads(_http(f"https://api.github.com/repos/{REPO}/commits/main"))["sha"]
+    except Exception as e:
+        log(f"atualização: não consegui consultar o GitHub ({type(e).__name__})"); return None
+
+def atualizar(sha=None):
+    """Baixa o zip do branch main e copia app/ por cima (sem tocar em senha, config e gravações)."""
+    import zipfile, io, shutil
+    sha = sha or commit_remoto()
+    lf = os.path.join(LOGD, "atualizar.log")
+    def w(m):
+        with open(lf, "a", encoding="utf-8") as f: f.write(time.strftime("%Y-%m-%d %H:%M:%S ") + m + "\n")
+    w(f"===== atualizar: início (commit {sha or '?'}) =====")
+    try:
+        data = _http(f"https://github.com/{REPO}/archive/refs/heads/main.zip", timeout=120)
+        z = zipfile.ZipFile(io.BytesIO(data))
+        n = 0
+        for info in z.infolist():
+            parts = info.filename.split("/")
+            if len(parts) < 3 or parts[1] != "app" or info.is_dir(): continue
+            rel = "/".join(parts[2:])
+            if parts[2] in ("scan", "logs", "pedidos") or rel.startswith("ui/rec/"): continue
+            if os.path.basename(rel) in NAO_SOBRESCREVER: continue
+            dest = os.path.join(HERE, *parts[2:])
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            novo = z.read(info)
+            try: atual = open(dest, "rb").read()
+            except OSError: atual = None
+            if atual != novo:
+                with open(dest, "wb") as f: f.write(novo)
+                w(f"  atualizado: {rel}"); n += 1
+        if sha: open(VERSAO, "w").write(sha)
+        w(f"===== atualizar: fim — {n} arquivo(s) alterado(s) =====")
+        log(f"atualização aplicada: {n} arquivo(s) (commit {(sha or '')[:7]})")
+        return n
+    except Exception as e:
+        w(f"ERRO: {type(e).__name__}: {e}"); log(f"atualização falhou: {e}"); return None
+
+def versao_local():
+    try: return open(VERSAO).read().strip()
+    except OSError: return ""
+
+def pedido():
+    """Lê e consome um pedido deixado pelo painel/atalho: 'reconfigurar', 'reiniciar' ou 'atualizar'."""
+    for nome in ("atualizar", "reconfigurar", "reiniciar"):
+        p = os.path.join(PEDIDOS, nome)
+        if os.path.exists(p):
+            try: os.remove(p)
+            except OSError: pass
+            return nome
+    return None
+
+def main():
+    log(f"supervisor iniciando ({platform.system()}) em {HERE}")
+    procs = build_procs()
 
     def bye(*_):
         log("supervisor encerrando"); [p.stop() for p in reversed(procs)]; sys.exit(0)
     signal.signal(signal.SIGTERM, bye); signal.signal(signal.SIGINT, bye)
 
+    ultima_checagem = 0
     while True:
+        ped = pedido()
+        # checagem automática do GitHub: se o commit mudou, atualiza e reinicia
+        if not ped and AUTO_UPDATE and time.time() - ultima_checagem > UPDATE_EVERY:
+            ultima_checagem = time.time()
+            sha = commit_remoto()
+            if sha and sha != versao_local():
+                log(f"nova versão no GitHub ({sha[:7]}); atualizando")
+                ped = "atualizar"
+        if ped:
+            log(f"pedido recebido: {ped}")
+            if ped == "atualizar":
+                n = atualizar()
+                if not n:          # falhou ou nada mudou: não precisa reiniciar
+                    ped = None
+            if ped:
+                for p in reversed(procs): p.stop()
+                if ped == "reconfigurar": reconfigurar()
+                procs = build_procs()
+                log(f"sistema reiniciado ({ped}); câmeras: {', '.join(cams())}")
         for p in procs:
             try: p.ensure()
             except Exception as e: log(f"falha ao iniciar {p.name}: {e}")

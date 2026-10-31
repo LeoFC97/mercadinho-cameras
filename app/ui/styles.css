@@ -140,3 +140,9 @@ body{
 .dbtn:hover{background:rgba(240,80,110,.22)}
 .dbtn.armed{background:var(--off);color:#fff;border-color:var(--off)}
 .dbtn.small{padding:5px 10px;font-size:12px}
+
+.procs{display:flex;flex-wrap:wrap;gap:6px;margin-top:4px}
+.proc{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:var(--muted);background:var(--bg);border:1px solid var(--line);border-radius:999px;padding:4px 10px}
+.proc i{width:7px;height:7px;border-radius:50%;background:var(--off)}
+.proc.up{color:var(--txt)} .proc.up i{background:var(--live);box-shadow:0 0 6px var(--live)}
+.dlog{margin:8px 0 0;max-height:220px;overflow:auto;background:var(--bg);border:1px solid var(--line);border-radius:9px;padding:10px 12px;font-size:11.5px;line-height:1.45;color:var(--muted);white-space:pre-wrap;user-select:text}
