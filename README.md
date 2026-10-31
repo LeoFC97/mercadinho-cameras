@@ -29,6 +29,7 @@ câmeras (RTSP, Wi-Fi) ──► go2rtc :1984 / :8554 ──► painel  http://<
 - `supervisor.py` — mantém tudo de pé: go2rtc, painel, uma gravação ffmpeg por câmera e a manutenção. Reinicia o que cair e escreve `logs/status.json`.
 - `painel_server.py` — servidor do painel. Suporta HTTP Range, necessário para o Safari/iPhone tocar as gravações, e expõe a API de disco (`GET /api/disk`, `POST /api/disk/delete`) usada pela tela Disco.
 - `reconfigurar.py` / `reconfigurar-auto.bat` — Windows: refaz a varredura, testa a senha, gera a configuração e reinicia a tarefa, em segundo plano (log em `logs\reconfigurar.log`). É o alvo do atalho "Reconfigurar câmeras".
+- `servidor_24h.py` / `servidor-24h.bat` — Windows: deixa o notebook como servidor 24h (nunca dormir/hibernar, tampa sem ação, Wi-Fi e disco sem economia de energia, Windows Update sem reinício automático). Relatório em `logs\servidor_24h.log`.
 - `gravador.py` — calcula o movimento de cada segmento e mantém só os trechos com movimento (± 2 segmentos de folga). Também gera o índice por câmera/dia e aplica o teto de disco.
 - `scan_cameras.py` → `setup_cameras.py` → `gen_config.py` — acham as câmeras na rede, testam a senha e geram o `go2rtc.yaml` e o `ui/config.js`.
 - `ui/` — painel React (React + htm embarcados em `ui/vendor/`, funciona sem internet).
