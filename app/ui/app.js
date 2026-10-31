@@ -1,6 +1,7 @@
 import './vendor/video-cam.js';
 import { ReviewView } from './review.js';
 import { DiskView } from './disk.js';
+import { VendasPanel } from './vendas.js';
 
 const { useState, useEffect, useRef, useCallback } = React;
 const html = htm.bind(React.createElement);
@@ -19,6 +20,7 @@ const I = {
   ext: html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3"/></svg>`,
   history: html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v5h5"/><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8"/><path d="M12 7v5l3 2"/></svg>`,
   edit: html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>`,
+  sales: html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 2v20l3-2 3 2 2-2 2 2 3-2 3 2V2l-3 2-3-2-2 2-2-2-3 2z"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>`,
   disk: html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>`,
   off: html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l22 22M21 21H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h2m4.5-3h5L17 6h4a2 2 0 0 1 2 2v9"/></svg>`,
 };
@@ -136,6 +138,15 @@ function App() {
   const [mode, setMode] = useState('live');          // 'live' | 'review' | 'disk'
   const [toast, setToast] = useState('');
   const [online, setOnline] = useState({});
+  const [vendasOpen, setVendasOpen] = useState(false);
+  const [vendasNonce, setVendasNonce] = useState(0);
+  const [jump, setJump] = useState(null);   // {t, nonce}: Revisão vai para esse horário
+  const abrirVendas = () => { if (vendasOpen) { setVendasOpen(false); return; } setVendasOpen(true); setVendasNonce(n => n + 1); };
+  const verNasCameras = (t) => {
+    setJump({ t: t - 20, nonce: Date.now() });
+    setMode('review');
+    if (window.innerWidth < 900) setVendasOpen(false);
+  };
   const clock = useClock();
   const rootRef = useRef(null);
 
@@ -172,15 +183,21 @@ function App() {
       onRename=${rename} onFocus=${focusCam} onToast=${showToast}
       focused=${opts.focused} idx=${opts.idx} onStateReport=${setCamState(cam.id)} />`;
 
-  if (mode === 'review')
-    return html`<${ReviewView} cameras=${CAMERAS} nameOf=${nameOf} go2rtc=${G} onExit=${() => setMode('live')} />`;
-  if (mode === 'disk')
-    return html`<div style=${{height:'100%'}}>
-      <${DiskView} cameras=${CAMERAS} nameOf=${nameOf} onExit=${() => setMode('live')} onToast=${showToast} />
-      <div class=${'toast' + (toast ? ' show' : '')}>${toast}</div>
+  const vendasBtn = html`<button class=${'iconbtn' + (vendasOpen ? ' on' : '')} title="Últimas vendas do market4u" onClick=${abrirVendas} style=${{width:'auto',padding:'0 12px',gap:'7px'}}>${I.sales}<span style=${{fontSize:'12.5px',fontWeight:600}}>Vendas</span></button>`;
+  const shell = (main) => html`<div class="shell">
+      <div class="shell-main">${main}</div>
+      ${vendasOpen ? html`<${VendasPanel} autoBuscar=${vendasNonce} onClose=${() => setVendasOpen(false)} onVerCameras=${verNasCameras} />` : null}
     </div>`;
 
-  return html`
+  if (mode === 'review')
+    return shell(html`<${ReviewView} cameras=${CAMERAS} nameOf=${nameOf} go2rtc=${G} onExit=${() => setMode('live')} jump=${jump} extraButtons=${vendasBtn} />`);
+  if (mode === 'disk')
+    return shell(html`<div style=${{height:'100%'}}>
+      <${DiskView} cameras=${CAMERAS} nameOf=${nameOf} onExit=${() => setMode('live')} onToast=${showToast} />
+      <div class=${'toast' + (toast ? ' show' : '')}>${toast}</div>
+    </div>`);
+
+  return shell(html`
     <div ref=${rootRef} style=${{ height: '100%', display: 'flex', flexDirection: 'column', background: 'var(--bg)' }}>
       <div class="topbar">
         <div class="brand">
@@ -202,6 +219,7 @@ function App() {
           <button class=${quality === 'sub' ? 'on' : ''} onClick=${() => setQuality('sub')}>Econ</button>
         </div>
         <button class="iconbtn" title="Revisão — voltar no tempo" onClick=${() => setMode('review')} style=${{width:'auto',padding:'0 12px',gap:'7px'}}>${I.history}<span style=${{fontSize:'12.5px',fontWeight:600}}>Revisão</span></button>
+        ${vendasBtn}
         <button class="iconbtn" title="Disco — espaço e limpeza das gravações" onClick=${() => setMode('disk')} style=${{width:'auto',padding:'0 12px',gap:'7px'}}>${I.disk}<span style=${{fontSize:'12.5px',fontWeight:600}}>Disco</span></button>
         <button class="iconbtn" title="Tela cheia (F)" onClick=${fsAll}>${I.full}</button>
       </div>
@@ -222,7 +240,7 @@ function App() {
       </div>
 
       <div class=${'toast' + (toast ? ' show' : '')}>${toast}</div>
-    </div>`;
+    </div>`);
 }
 
 ReactDOM.createRoot(document.getElementById('root')).render(html`<${App} />`);

@@ -22,7 +22,7 @@ function segAt(list, t) {
 
 const MOTION_TH = 1.6;
 
-export function ReviewView({ cameras, nameOf, go2rtc, onExit }) {
+export function ReviewView({ cameras, nameOf, go2rtc, onExit, jump, extraButtons }) {
   const [manifest, setManifest] = useState(null);
   const [day, setDay] = useState(null);
   const [index, setIndex] = useState({});     // camId -> [ {t,d,m,f} ] ordenado
@@ -31,6 +31,9 @@ export function ReviewView({ cameras, nameOf, go2rtc, onExit }) {
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(1);
   const [err, setErr] = useState('');
+  const [aviso, setAviso] = useState('');
+  const pendingJump = useRef(null);   // horário pedido de fora (ex.: "ver nas câmeras" de uma venda)
+  useEffect(() => { if (!aviso) return; const id = setTimeout(() => setAviso(''), 4500); return () => clearTimeout(id); }, [aviso]);
 
   const tRef = useRef(0), playingRef = useRef(false), speedRef = useRef(1);
   const vids = useRef({});       // camId -> <video>
@@ -70,7 +73,7 @@ export function ReviewView({ cameras, nameOf, go2rtc, onExit }) {
       let s = Infinity, e = -Infinity;
       for (const c of cameras) for (const seg of (idx[c.id] || [])) { s = Math.min(s, seg.t); e = Math.max(e, seg.t + seg.d); }
       if (s === Infinity) { setRange(null); return; }
-      setRange({ start: s, end: e });
+      setRange({ start: s, end: e, day });
       tRef.current = s; setDispT(s);
     })();
     return () => { alive = false; };
@@ -196,6 +199,22 @@ export function ReviewView({ cameras, nameOf, go2rtc, onExit }) {
     masterRef.current = null; waitSince.current = 0;
     for (const c of cameras) { lastFix.current[c.id] = 0; syncCam(c.id, t, playingRef.current, false); }
   };
+  // pedido externo de horário: troca o dia se precisar e posiciona (quando o índice do dia chegar)
+  useEffect(() => { if (jump) pendingJump.current = jump.t; }, [jump && jump.nonce]);
+  useEffect(() => {
+    const t = pendingJump.current;
+    if (t == null || !manifest) return;
+    const d = new Date(t * 1000);
+    const ds = `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}`;
+    if (!(manifest.days || []).includes(ds)) { pendingJump.current = null; setAviso('Sem gravação no dia ' + ds.split('-').reverse().join('/')); return; }
+    if (day !== ds) { setPlaying(false); setDay(ds); return; }
+    if (!range || range.day !== ds) return;
+    pendingJump.current = null;
+    if (t < range.start - 60 || t > range.end + 60) setAviso('Sem gravação perto de ' + hhmmss(t) + ' — mostrando o trecho mais próximo');
+    seekTo(t);
+    setPlaying(true);
+  }, [jump && jump.nonce, manifest, day, range]);
+
   const togglePlay = () => setPlaying(p => !p);
   const step = (sec) => seekTo(tRef.current + sec);
   const nextMotion = (dir) => {
@@ -239,11 +258,13 @@ export function ReviewView({ cameras, nameOf, go2rtc, onExit }) {
           <button onClick=${() => changeDay(1)}>▶</button>
         </div>
         <div class="spacer"></div>
+        ${extraButtons || null}
         ${manifest && manifest.disk ? html`<div class="stat">disco <b>${manifest.disk.used_gb}</b>/${manifest.disk.cap_gb} GB</div>` : null}
         <div class="clock">${range ? hhmmss(dispT) : '--:--:--'}</div>
       </div>
 
       <div class="stage">
+        ${aviso ? html`<div class="vd-aviso">${aviso}</div>` : null}
         ${err
           ? html`<div class="offbox" style=${{position:'static',height:'100%'}}><span>${err}</span></div>`
           : html`<div class=${'grid ' + cols} style=${{height:'100%'}}>

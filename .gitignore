@@ -6,6 +6,7 @@ gravador.env
 app/ui/config.js
 *.key
 # dados locais
+app/dados/
 app/ui/rec/
 app/scan/
 app/logs/

@@ -14,6 +14,25 @@ DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 SEG_RE = re.compile(r"^(\d{8})_(\d{6})\.mp4$")
 _lock = threading.Lock()
 
+# integração com o market4u (vendas) — sessão e planilhas ficam em dados/, fora da pasta servida
+DADOS = os.path.join(HERE, "dados")
+_m4u = None
+def m4u():
+    global _m4u
+    if _m4u is None:
+        import market4u
+        _m4u = market4u.Market4u(DADOS)
+    return _m4u
+
+def _dia_param(path):
+    from urllib.parse import urlparse, parse_qs
+    from datetime import date, datetime as _dt
+    q = parse_qs(urlparse(path).query)
+    v = (q.get("dia") or [""])[0]
+    if not v: return date.today()
+    if not DAY_RE.match(v): raise ValueError("dia inválido")
+    return _dt.strptime(v, "%Y-%m-%d").date()
+
 def _env_float(name, default):
     try: return float(os.environ.get(name, default))
     except Exception: return float(default)
@@ -183,9 +202,58 @@ class Handler(SimpleHTTPRequestHandler):
         if clean == "/api/sistema":
             try: return self._json(200, sistema_status())
             except Exception as e: return self._json(500, {"erro": str(e)})
+        if clean.startswith("/api/vendas"):
+            return self._vendas_get(clean)
         return super().do_GET()
+    # ---- vendas (market4u) ----
+    def _vendas_get(self, clean):
+        import market4u
+        try:
+            if clean == "/api/vendas/status":
+                return self._json(200, m4u().status())
+            if clean == "/api/vendas":
+                return self._json(200, m4u().vendas(_dia_param(self.path)))
+            if clean == "/api/vendas/planilha":
+                dia = _dia_param(self.path)
+                p = m4u().planilha(dia)
+                if not p: return self._json(404, {"erro": "planilha desse dia ainda não foi baixada"})
+                raw = open(p, "rb").read()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/csv; charset=windows-1252")
+                self.send_header("Content-Disposition", f'attachment; filename="vendas-{dia:%Y-%m-%d}.csv"')
+                self.send_header("Content-Length", str(len(raw)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(raw)
+                return
+            return self._json(404, {"erro": "não encontrado"})
+        except market4u.PrecisaLogin as e:
+            return self._json(401, {"erro": str(e), "precisa_login": True})
+        except (market4u.Market4uErro, ValueError) as e:
+            return self._json(502, {"erro": str(e)})
+        except Exception as e:
+            return self._json(500, {"erro": f"erro inesperado: {e}"})
+    def _vendas_post(self, clean):
+        import market4u
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+            req = json.loads(self.rfile.read(n) or b"{}") if n else {}
+            if clean == "/api/vendas/login":
+                r = m4u().login(req.get("usuario", ""), req.get("senha", ""), req.get("mfa", ""),
+                                req.get("authenticator", ""), bool(req.get("lembrar", True)))
+                return self._json(200, r)
+            if clean == "/api/vendas/sair":
+                m4u().sair()
+                return self._json(200, {"ok": True})
+            return self._json(404, {"erro": "não encontrado"})
+        except (market4u.Market4uErro, ValueError) as e:
+            return self._json(502, {"ok": False, "erro": str(e), "msg": str(e)})
+        except Exception as e:
+            return self._json(500, {"ok": False, "erro": f"erro inesperado: {e}", "msg": str(e)})
     def do_POST(self):
         clean = self.path.split("?")[0]
+        if clean.startswith("/api/vendas/"):
+            return self._vendas_post(clean)
         if clean in ("/api/sistema/reconfigurar", "/api/sistema/reiniciar", "/api/sistema/atualizar"):
             # deixa um pedido para o supervisor (que roda como SYSTEM) — sem precisar de administrador
             try:
