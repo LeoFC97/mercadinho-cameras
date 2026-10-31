@@ -13,7 +13,7 @@ for CAM in $(python3 -c "import gravador; print(' '.join(gravador.cams()))"); do
   mkdir -p "ui/rec/$CAM"
   ( while true; do
       ffmpeg -nostdin -loglevel error -rtsp_transport tcp -i "rtsp://127.0.0.1:8554/${CAM}${SUF}" \
-        -an -c copy -f segment -segment_time "$SEG" -reset_timestamps 1 -strftime 1 \
+        -an -c copy -f segment -segment_time "$SEG" -reset_timestamps 1 -strftime 1 -segment_format_options movflags=+faststart \
         "ui/rec/$CAM/%Y%m%d_%H%M%S.mp4"
       echo "[$CAM] captura caiu; tentando de novo em 3s"; sleep 3
     done ) &

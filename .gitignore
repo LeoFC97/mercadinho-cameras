@@ -8,6 +8,7 @@ app/ui/config.js
 # dados locais
 app/dados/
 app/ui/rec/
+app/ui/clipes/
 app/scan/
 app/logs/
 scan/

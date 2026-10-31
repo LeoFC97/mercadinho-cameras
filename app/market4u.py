@@ -354,6 +354,28 @@ class Market4u:
                 self._salvar_cfg(c)
             return {"dia": alvo, "buscado_em": time.time(), "itens": itens, "resumo": resumo(itens)}
 
+    def vendas_cache(self, dia: date, max_idade=120, permitir_velho=True):
+        """Vendas do dia usando a planilha já baixada quando ela ainda vale:
+        dia passado baixado depois do fim do dia -> definitiva; hoje -> se tiver menos de max_idade s.
+        Sem sessão no market4u, devolve a última planilha guardada (marcada como 'velha')."""
+        path = os.path.join(self.dir, "vendas", dia.strftime("%Y-%m-%d") + ".csv")
+        alvo = dia.strftime("%Y-%m-%d")
+        def do_arquivo(velha):
+            itens = [i for i in ler_planilha(open(path, "rb").read()) if i["datahora"].startswith(alvo)]
+            return {"dia": alvo, "buscado_em": os.path.getmtime(path), "itens": itens,
+                    "resumo": resumo(itens), "cache": True, "velha": velha}
+        if os.path.isfile(path):
+            mt = os.path.getmtime(path)
+            fim_dia = time.mktime(dia.timetuple()) + 86400
+            if (dia < date.today() and mt > fim_dia + 600) or (time.time() - mt < max_idade):
+                return do_arquivo(False)
+        try:
+            return self.vendas(dia)
+        except Market4uErro:
+            if permitir_velho and os.path.isfile(path):
+                return do_arquivo(True)
+            raise
+
     def planilha(self, dia: date):
         path = os.path.join(self.dir, "vendas", dia.strftime("%Y-%m-%d") + ".csv")
         return path if os.path.isfile(path) else None

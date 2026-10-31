@@ -20,7 +20,7 @@ while read -r CAM IP; do
   OUT="ui/rec/$CAM/%Y%m%d_%H%M%S.mp4"
   ( while true; do
       "$FFMPEG" -nostdin -loglevel warning -rtsp_transport tcp -i "$URL" \
-        -an -c copy -f segment -segment_time $SEG -reset_timestamps 1 -strftime 1 "$OUT"
+        -an -c copy -f segment -segment_time $SEG -reset_timestamps 1 -strftime 1 -segment_format_options movflags=+faststart "$OUT"
       echo "[$CAM] ffmpeg saiu; reconectando em 2s..." >> scan/gravador.log
       sleep 2
     done ) &

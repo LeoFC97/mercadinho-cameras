@@ -24,6 +24,20 @@ def m4u():
         _m4u = market4u.Market4u(DADOS)
     return _m4u
 
+_oc = _cl = None
+def ocorr():
+    global _oc
+    if _oc is None:
+        import ocorrencias
+        _oc = ocorrencias.Ocorrencias(DADOS)
+    return _oc
+def clipes_srv():
+    global _cl
+    if _cl is None:
+        import clipes
+        _cl = clipes.Clipes(HERE, REC, os.path.join(UI, "clipes"))
+    return _cl
+
 def _dia_param(path):
     from urllib.parse import urlparse, parse_qs
     from datetime import date, datetime as _dt
@@ -204,7 +218,70 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception as e: return self._json(500, {"erro": str(e)})
         if clean.startswith("/api/vendas"):
             return self._vendas_get(clean)
+        if clean in ("/api/analise", "/api/ocorrencias", "/api/clipes") or clean.startswith("/api/clipes/"):
+            return self._oc_get(clean)
         return super().do_GET()
+    # ---- análise movimento x vendas, ocorrências e clipes ----
+    def _oc_get(self, clean):
+        try:
+            if clean == "/api/analise":
+                import analise
+                return self._json(200, analise.analise_dia(REC, _cams_config(), _dia_param(self.path), m4u()))
+            if clean == "/api/ocorrencias":
+                import ocorrencias
+                return self._json(200, {"ocorrencias": ocorr().listar(), "clipes": clipes_srv().listar(),
+                                        "status": [{"id": k, "rotulo": ocorrencias.ROTULO[k]} for k in ocorrencias.STATUS]})
+            if clean == "/api/clipes":
+                return self._json(200, {"clipes": clipes_srv().listar()})
+            m = clipes_srv().obter(clean.rsplit("/", 1)[1])
+            return self._json(200, m) if m else self._json(404, {"erro": "clipe não encontrado"})
+        except ValueError as e:
+            return self._json(400, {"erro": str(e)})
+        except Exception as e:
+            return self._json(500, {"erro": f"erro inesperado: {e}"})
+    def _oc_post(self, clean):
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+            req = json.loads(self.rfile.read(n) or b"{}") if n else {}
+            parts = clean.strip("/").split("/")          # api, ocorrencias|clipes, [id], [acao]
+            if parts[1] == "clipes":
+                if len(parts) == 2:
+                    m = clipes_srv().pedir(req.get("t0"), req.get("t1"), req.get("cameras") or _cams_config(),
+                                           req.get("nomes"), req.get("titulo", ""), req.get("autor", ""))
+                    return self._json(200, m)
+                if len(parts) == 4 and parts[3] == "apagar":
+                    clipes_srv().apagar(parts[2]); return self._json(200, {"ok": True})
+            if parts[1] == "ocorrencias":
+                if len(parts) == 2:
+                    o = ocorr().criar(req)
+                    gc = req.get("clipe")
+                    if gc:
+                        c = clipes_srv().pedir(gc.get("t0"), gc.get("t1"), gc.get("cameras") or o["cameras"] or _cams_config(),
+                                               gc.get("nomes"), o["titulo"], o["autor"], ocorrencia=o["id"])
+                        o = ocorr().definir_clipe(o["id"], c["id"])
+                    return self._json(200, o)
+                if len(parts) == 3:
+                    return self._json(200, ocorr().atualizar(parts[2], req))
+                if len(parts) == 4 and parts[3] == "apagar":
+                    o = ocorr().obter(parts[2])
+                    ocorr().apagar(parts[2])
+                    if o and o.get("clipe") and req.get("apagar_clipe", True):
+                        try: clipes_srv().apagar(o["clipe"])
+                        except KeyError: pass
+                    return self._json(200, {"ok": True})
+                if len(parts) == 4 and parts[3] == "clipe":
+                    o = ocorr().obter(parts[2])
+                    if not o: raise KeyError("ocorrência não encontrada")
+                    c = clipes_srv().pedir(req.get("t0"), req.get("t1"), req.get("cameras") or o["cameras"] or _cams_config(),
+                                           req.get("nomes"), o["titulo"], req.get("autor", ""), ocorrencia=o["id"])
+                    return self._json(200, ocorr().definir_clipe(o["id"], c["id"]))
+            return self._json(404, {"erro": "não encontrado"})
+        except KeyError as e:
+            return self._json(404, {"erro": str(e).strip("'\"")})
+        except ValueError as e:
+            return self._json(400, {"erro": str(e)})
+        except Exception as e:
+            return self._json(500, {"erro": f"erro inesperado: {e}"})
     # ---- vendas (market4u) ----
     def _vendas_get(self, clean):
         import market4u
@@ -254,6 +331,8 @@ class Handler(SimpleHTTPRequestHandler):
         clean = self.path.split("?")[0]
         if clean.startswith("/api/vendas/"):
             return self._vendas_post(clean)
+        if clean.startswith("/api/ocorrencias") or clean.startswith("/api/clipes"):
+            return self._oc_post(clean)
         if clean in ("/api/sistema/reconfigurar", "/api/sistema/reiniciar", "/api/sistema/atualizar"):
             # deixa um pedido para o supervisor (que roda como SYSTEM) — sem precisar de administrador
             try:

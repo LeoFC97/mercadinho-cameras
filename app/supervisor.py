@@ -120,6 +120,7 @@ def build_procs():
         procs.append(Proc("grava_" + cam, [FFMPEG, "-nostdin", "-loglevel", "error", "-rtsp_transport", "tcp",
             "-i", f"rtsp://127.0.0.1:8554/{cam}{SUF}", "-an", "-c", "copy", "-f", "segment",
             "-segment_time", str(SEG), "-reset_timestamps", "1", "-strftime", "1",
+            "-segment_format_options", "movflags=+faststart",   # índice no começo: abre mais rápido na Revisão
             os.path.join(REC, cam, "%Y%m%d_%H%M%S.mp4")]))
     procs.append(Proc("manutencao", PYX + [os.path.join(HERE, "gravador.py")]))
     return procs
@@ -172,7 +173,7 @@ def atualizar(sha=None):
             parts = info.filename.split("/")
             if len(parts) < 3 or parts[1] != "app" or info.is_dir(): continue
             rel = "/".join(parts[2:])
-            if parts[2] in ("scan", "logs", "pedidos", "dados") or rel.startswith("ui/rec/"): continue
+            if parts[2] in ("scan", "logs", "pedidos", "dados") or rel.startswith("ui/rec/") or rel.startswith("ui/clipes/"): continue
             if os.path.basename(rel) in NAO_SOBRESCREVER: continue
             dest = os.path.join(HERE, *parts[2:])
             os.makedirs(os.path.dirname(dest), exist_ok=True)
