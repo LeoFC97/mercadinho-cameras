@@ -189,6 +189,11 @@ def atualizar(sha=None):
     except Exception as e:
         w(f"ERRO: {type(e).__name__}: {e}"); log(f"atualização falhou: {e}"); return None
 
+def _hash_self():
+    import hashlib
+    try: return hashlib.sha1(open(os.path.abspath(__file__), "rb").read()).hexdigest()
+    except OSError: return ""
+
 def versao_local():
     try: return open(VERSAO).read().strip()
     except OSError: return ""
@@ -224,9 +229,16 @@ def main():
         if ped:
             log(f"pedido recebido: {ped}")
             if ped == "atualizar":
+                antes = _hash_self()
                 n = atualizar()
                 if not n:          # falhou ou nada mudou: não precisa reiniciar
                     ped = None
+                elif _hash_self() != antes:
+                    # o próprio supervisor mudou: encerra com erro para o Agendador de Tarefas
+                    # relançá-lo em ~1 min com o código novo (os filhos morrem junto e voltam com ele)
+                    log("supervisor.py atualizado; saindo para ser relançado pela tarefa agendada")
+                    for p in reversed(procs): p.stop()
+                    sys.exit(1)
             if ped:
                 for p in reversed(procs): p.stop()
                 if ped == "reconfigurar": reconfigurar()
