@@ -3,6 +3,7 @@ import { ReviewView } from './review.js';
 import { DiskView } from './disk.js';
 import { VendasPanel } from './vendas.js';
 import { OcorrenciasView } from './ocorrencias.js';
+import { IAView } from './ia.js';
 
 const { useState, useEffect, useRef, useCallback } = React;
 const html = htm.bind(React.createElement);
@@ -21,6 +22,7 @@ const I = {
   ext: html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3"/></svg>`,
   history: html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v5h5"/><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8"/><path d="M12 7v5l3 2"/></svg>`,
   edit: html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>`,
+  ia: html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" rx="3"/><path d="M9 9h6v6H9zM9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg>`,
   flag: html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 22V4"/><path d="M4 4h13l-2 4 2 4H4"/></svg>`,
   sales: html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 2v20l3-2 3 2 2-2 2 2 3-2 3 2V2l-3 2-3-2-2 2-2-2-3 2z"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>`,
   disk: html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>`,
@@ -171,7 +173,7 @@ function App() {
 
   useEffect(() => {
     const onKey = (e) => {
-      if (e.target.tagName === 'INPUT') return;
+      if (mode !== 'live' || /INPUT|TEXTAREA|SELECT/.test(e.target.tagName)) return;
       if (e.key >= '1' && e.key <= '9') { const c = CAMERAS[+e.key - 1]; if (c) focusCam(c.id, true); }
       else if (e.key === '0' || e.key === 'Escape') toGrid();
       else if (e.key.toLowerCase() === 'f') fsAll();
@@ -179,7 +181,7 @@ function App() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [view]);
+  }, [view, mode]);
 
   const colClass = cols === 'auto'
     ? (CAMERAS.length <= 1 ? 'cols-1' : CAMERAS.length <= 4 ? 'cols-2' : 'cols-3')
@@ -196,17 +198,23 @@ function App() {
 
   const vendasBtn = html`<button class=${'iconbtn' + (vendasOpen ? ' on' : '')} title="Últimas vendas do market4u" onClick=${abrirVendas} style=${{width:'auto',padding:'0 12px',gap:'7px'}}>${I.sales}<span style=${{fontSize:'12.5px',fontWeight:600}}>Vendas</span></button>`;
   const ocBtn = html`<button class=${'iconbtn' + (mode === 'ocorrencias' ? ' on' : '')} title="Ocorrências marcadas e clipes" onClick=${() => { setOcAbrir(null); setMode('ocorrencias'); }} style=${{width:'auto',padding:'0 12px',gap:'7px'}}>${I.flag}<span style=${{fontSize:'12.5px',fontWeight:600}}>Ocorrências</span>${ocAbertas ? html`<span class="oc-badge">${ocAbertas}</span>` : null}</button>`;
+  const iaBtn = html`<button class=${'iconbtn' + (mode === 'ia' ? ' on' : '')} title="Inteligência Artificial — fotos e marcações dos produtos" onClick=${() => setMode('ia')} style=${{width:'auto',padding:'0 12px',gap:'7px'}}>${I.ia}<span style=${{fontSize:'12.5px',fontWeight:600}}>IA</span></button>`;
   const shell = (main) => html`<div class="shell">
       <div class="shell-main">${main}</div>
       ${vendasOpen ? html`<${VendasPanel} autoBuscar=${vendasNonce} onClose=${() => setVendasOpen(false)} onVerCameras=${verNasCameras} />` : null}
     </div>`;
 
   if (mode === 'review')
-    return shell(html`<${ReviewView} cameras=${CAMERAS} nameOf=${nameOf} go2rtc=${G} onExit=${() => setMode('live')} jump=${jump} extraButtons=${html`${ocBtn}${vendasBtn}`} onAbrirOcorrencia=${abrirOcorrencia} />`);
+    return shell(html`<${ReviewView} cameras=${CAMERAS} nameOf=${nameOf} go2rtc=${G} onExit=${() => setMode('live')} jump=${jump} extraButtons=${html`${iaBtn}${ocBtn}${vendasBtn}`} onAbrirOcorrencia=${abrirOcorrencia} />`);
+  if (mode === 'ia')
+    return shell(html`<div style=${{height:'100%'}}>
+      <${IAView} cameras=${CAMERAS} nameOf=${nameOf} go2rtc=${G} onExit=${() => setMode('live')} extraButtons=${html`${ocBtn}${vendasBtn}`} onToast=${showToast} />
+      <div class=${'toast' + (toast ? ' show' : '')}>${toast}</div>
+    </div>`);
   if (mode === 'ocorrencias')
     return shell(html`<div style=${{height:'100%'}}>
       <${OcorrenciasView} cameras=${CAMERAS} nameOf=${nameOf} onExit=${() => setMode('live')} onVer=${irRevisao}
-        abrirId=${ocAbrir} extraButtons=${vendasBtn} onToast=${showToast} />
+        abrirId=${ocAbrir} extraButtons=${html`${iaBtn}${vendasBtn}`} onToast=${showToast} />
       <div class=${'toast' + (toast ? ' show' : '')}>${toast}</div>
     </div>`);
   if (mode === 'disk')
@@ -237,6 +245,7 @@ function App() {
           <button class=${quality === 'sub' ? 'on' : ''} onClick=${() => setQuality('sub')}>Econ</button>
         </div>
         <button class="iconbtn" title="Revisão — voltar no tempo" onClick=${() => setMode('review')} style=${{width:'auto',padding:'0 12px',gap:'7px'}}>${I.history}<span style=${{fontSize:'12.5px',fontWeight:600}}>Revisão</span></button>
+        ${iaBtn}
         ${ocBtn}
         ${vendasBtn}
         <button class="iconbtn" title="Disco — espaço e limpeza das gravações" onClick=${() => setMode('disk')} style=${{width:'auto',padding:'0 12px',gap:'7px'}}>${I.disk}<span style=${{fontSize:'12.5px',fontWeight:600}}>Disco</span></button>

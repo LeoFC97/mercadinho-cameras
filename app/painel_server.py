@@ -38,6 +38,14 @@ def clipes_srv():
         _cl = clipes.Clipes(HERE, REC, os.path.join(UI, "clipes"))
     return _cl
 
+_ia = None
+def ia_srv():
+    global _ia
+    if _ia is None:
+        import ia
+        _ia = ia.IA(HERE, REC, DADOS, _cams_config)
+    return _ia
+
 def _dia_param(path):
     from urllib.parse import urlparse, parse_qs
     from datetime import date, datetime as _dt
@@ -220,6 +228,8 @@ class Handler(SimpleHTTPRequestHandler):
             return self._vendas_get(clean)
         if clean in ("/api/analise", "/api/ocorrencias", "/api/clipes") or clean.startswith("/api/clipes/"):
             return self._oc_get(clean)
+        if clean.startswith("/api/ia/"):
+            return self._ia_get(clean)
         return super().do_GET()
     # ---- análise movimento x vendas, ocorrências e clipes ----
     def _oc_get(self, clean):
@@ -235,6 +245,87 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json(200, {"clipes": clipes_srv().listar()})
             m = clipes_srv().obter(clean.rsplit("/", 1)[1])
             return self._json(200, m) if m else self._json(404, {"erro": "clipe não encontrado"})
+        except ValueError as e:
+            return self._json(400, {"erro": str(e)})
+        except Exception as e:
+            return self._json(500, {"erro": f"erro inesperado: {e}"})
+    # ---- inteligência artificial: produtos, fotos, marcações, pacote de treino ----
+    def _arquivo(self, path, ctype, baixar_nome=None, cache=None):
+        size = os.path.getsize(path)
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(size))
+        if baixar_nome: self.send_header("Content-Disposition", f'attachment; filename="{baixar_nome}"')
+        self.send_header("Cache-Control", cache or "no-store")
+        self.end_headers()
+        with open(path, "rb") as f:
+            while True:
+                b = f.read(262144)
+                if not b: break
+                self.wfile.write(b)
+    def _ia_get(self, clean):
+        from urllib.parse import urlparse, parse_qs
+        q = {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
+        try:
+            ia = ia_srv()
+            if clean == "/api/ia/resumo": return self._json(200, ia.resumo())
+            if clean == "/api/ia/sugestoes": return self._json(200, {"sugestoes": ia.sugestoes()})
+            if clean == "/api/ia/imagens":
+                cl = int(q["classe"]) if q.get("classe", "") not in ("", None) else None
+                lst, total = ia.listar(q.get("status", "pendente"), cl, int(q.get("limite", 300)))
+                return self._json(200, {"imagens": lst, "total": total})
+            if clean.startswith("/api/ia/imagens/"):
+                r = ia.obter(clean.rsplit("/", 1)[1])
+                return self._json(200, r) if r else self._json(404, {"erro": "imagem não encontrada"})
+            if clean.startswith("/api/ia/img/"):
+                p = ia.caminho_img(clean.rsplit("/", 1)[1])
+                if not p: return self._json(404, {"erro": "imagem não encontrada"})
+                return self._arquivo(p, "image/jpeg", cache="max-age=86400")
+            if clean.startswith("/api/ia/previa/"):
+                data = ia.previa(clean.rsplit("/", 1)[1].rsplit(".", 1)[0])
+                self.send_response(200)
+                self.send_header("Content-Type", "image/jpeg")
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers(); self.wfile.write(data); return
+            if clean == "/api/ia/exportar.zip":
+                p = os.path.join(ia.exp, "dataset_yolo.zip")
+                if not os.path.isfile(p): return self._json(404, {"erro": "gere o pacote primeiro"})
+                return self._arquivo(p, "application/zip", time.strftime("produtos_mercadinho_%Y-%m-%d.zip", time.localtime(os.path.getmtime(p))))
+            return self._json(404, {"erro": "não encontrado"})
+        except KeyError as e:
+            return self._json(404, {"erro": str(e).strip("'\"")})
+        except ValueError as e:
+            return self._json(400, {"erro": str(e)})
+        except Exception as e:
+            return self._json(500, {"erro": f"erro inesperado: {e}"})
+    def _ia_post(self, clean):
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+            req = json.loads(self.rfile.read(n) or b"{}") if n else {}
+            ia = ia_srv()
+            parts = clean.strip("/").split("/")          # api, ia, recurso, [id], [acao]
+            rec = parts[2]
+            if rec == "classes":
+                if len(parts) == 3: return self._json(200, ia.criar_classe(req))
+                cid = int(parts[3])
+                if len(parts) == 5 and parts[4] == "apagar":
+                    ia.apagar_classe(cid); return self._json(200, {"ok": True})
+                return self._json(200, ia.editar_classe(cid, req))
+            if rec == "capturar":
+                if req.get("fonte") == "ao_vivo":
+                    return self._json(200, ia.capturar_ao_vivo(req.get("cameras"), req.get("qtd", 1), req.get("intervalo", 1), req.get("autor", "")))
+                tempos = req.get("tempos") or ([req["t"]] if req.get("t") is not None else [])
+                return self._json(200, ia.capturar_gravacao(req.get("cameras"), tempos, req.get("autor", ""), req.get("venda")))
+            if rec == "imagens" and len(parts) >= 4:
+                if len(parts) == 5 and parts[4] == "apagar":
+                    ia.apagar(parts[3]); return self._json(200, {"ok": True})
+                return self._json(200, ia.rotular(parts[3], req))
+            if rec == "exportar":
+                return self._json(200, ia.exportar())
+            return self._json(404, {"erro": "não encontrado"})
+        except KeyError as e:
+            return self._json(404, {"erro": str(e).strip("'\"")})
         except ValueError as e:
             return self._json(400, {"erro": str(e)})
         except Exception as e:
@@ -333,6 +424,8 @@ class Handler(SimpleHTTPRequestHandler):
             return self._vendas_post(clean)
         if clean.startswith("/api/ocorrencias") or clean.startswith("/api/clipes"):
             return self._oc_post(clean)
+        if clean.startswith("/api/ia/"):
+            return self._ia_post(clean)
         if clean in ("/api/sistema/reconfigurar", "/api/sistema/reiniciar", "/api/sistema/atualizar"):
             # deixa um pedido para o supervisor (que roda como SYSTEM) — sem precisar de administrador
             try:

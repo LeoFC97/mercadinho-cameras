@@ -300,6 +300,17 @@ export function ReviewView({ cameras, nameOf, go2rtc, onExit, jump, extraButtons
     else setAviso(dir > 0 ? 'Não há mais trechos sem venda depois deste ponto' : 'Não há trechos sem venda antes deste ponto');
   };
   const pausarE = (m) => { setPlaying(false); setModal(m); };
+  // fotos para a IA no instante atual (das câmeras visíveis)
+  const fotoIA = async () => {
+    setPlaying(false);
+    const t = tRef.current, cams = ativas().map(c => c.id);
+    const venda = (analise?.vendas || []).filter(v => Math.abs(v.t - t) <= 60).sort((a, b) => Math.abs(a.t - t) - Math.abs(b.t - t))[0];
+    try {
+      const r = await api('/api/ia/capturar', { json: { fonte: 'gravacao', cameras: cams, tempos: [t], autor: lerAutor(),
+        venda: venda ? { t: venda.t, total: venda.total, produtos: venda.produtos } : null } });
+      setAviso(`${r.imagens.length} foto(s) enviada(s) para a fila da IA (aba IA → Rotular)`);
+    } catch (e) { setAviso('Não deu para tirar a foto: ' + e.message); }
+  };
 
   const changeDay = (delta) => {
     if (!manifest || !manifest.days.length) return;
@@ -361,7 +372,7 @@ export function ReviewView({ cameras, nameOf, go2rtc, onExit, jump, extraButtons
           index=${index} cameras=${cameras} analise=${analise} ocorrs=${ocorrs} suspeitos=${suspeitos}
           onSeek=${seekTo} onToggle=${togglePlay} onStep=${step}
           onSpeed=${setSpeed} onMotion=${nextMotion} onSuspeito=${irSuspeito}
-          onLista=${() => setListaSusp(v => !v)} onMarcar=${() => pausarE('marcar')} onClipe=${() => pausarE('clipe')}
+          onLista=${() => setListaSusp(v => !v)} onMarcar=${() => pausarE('marcar')} onClipe=${() => pausarE('clipe')} onFotoIA=${fotoIA}
           onOcorrencia=${onAbrirOcorrencia} I=${I} /> ` : null}
 
       ${listaSusp && analise ? html`<${ListaSuspeitos} analise=${analise} t=${dispT}
@@ -374,7 +385,7 @@ export function ReviewView({ cameras, nameOf, go2rtc, onExit, jump, extraButtons
 
 // Barra de controles + linha do tempo com mapa de movimento, vendas, trechos sem venda e ocorrências
 function Controls({ range, t, playing, speed, index, cameras, analise, ocorrs, suspeitos, onSeek, onToggle, onStep, onSpeed, onMotion,
-                    onSuspeito, onLista, onMarcar, onClipe, onOcorrencia, I }) {
+                    onSuspeito, onLista, onMarcar, onClipe, onFotoIA, onOcorrencia, I }) {
   const barRef = useRef(null);
   const span = Math.max(1, range.end - range.start);
   const pct = ((t - range.start) / span) * 100;
@@ -419,6 +430,7 @@ function Controls({ range, t, playing, speed, index, cameras, analise, ocorrs, s
         <div class="spacer" style=${{flex:1}}></div>
         <button class="iconbtn rv-acao" style=${btxt} onClick=${onMarcar} title="Marcar uma ocorrência neste horário">🚩 Marcar ocorrência</button>
         <button class="iconbtn rv-acao" style=${btxt} onClick=${onClipe} title="Exportar um trecho como vídeo">🎬 Exportar clipe</button>
+        <button class="iconbtn rv-acao" style=${btxt} onClick=${onFotoIA} title="Tirar foto deste instante para treinar a IA (vai para a fila de rotulagem)">📸 IA</button>
         <div class="seg">
           ${[0.5,1,2,4,8].map(s => html`<button class=${speed===s?'on':''} onClick=${() => onSpeed(s)}>${s}×</button>`)}
         </div>
