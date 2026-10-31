@@ -76,8 +76,11 @@ export function ReviewView({ cameras, nameOf, go2rtc, onExit }) {
     return () => { alive = false; };
   }, [day, cameras]);
 
-  // garante o segmento certo em cada <video> para o tempo t
-  const syncCam = (camId, t, play) => {
+  // garante o segmento certo em cada <video> para o tempo t.
+  // isMaster: a câmera que dita o relógio nunca é "corrigida" contra ele (senão relógio e vídeo
+  // ficam se puxando — era o vai-e-volta); as outras corrigem deriva com folga e intervalo mínimo.
+  const lastFix = useRef({});    // camId -> ms da última correção por seek
+  const syncCam = (camId, t, play, isMaster) => {
     const v = vids.current[camId]; if (!v) return false;
     const list = index[camId] || [];
     const i = segAt(list, t);
@@ -91,21 +94,44 @@ export function ReviewView({ cameras, nameOf, go2rtc, onExit }) {
       cur.current[camId] = want;
       v.src = `/rec/${camId}/${want}`;
       v.load();
-      const off = Math.max(0, t - seg.t);
-      const onmeta = () => { try { v.currentTime = off; v.playbackRate = Math.min(speedRef.current, 4); if (play) v.play().catch(() => {}); } catch {} v.removeEventListener('loadedmetadata', onmeta); };
+      const onmeta = () => {
+        v.removeEventListener('loadedmetadata', onmeta);
+        if (cur.current[camId] !== want) return;            // já trocou de novo
+        // posição calculada AGORA (o carregamento pode ter demorado), não na hora do pedido
+        const dur = isFinite(v.duration) ? v.duration : seg.d;
+        const off = Math.max(0, Math.min(dur - 0.05, tRef.current - seg.t));
+        try { v.currentTime = off; v.playbackRate = Math.min(speedRef.current, 4); } catch {}
+        if (playingRef.current) v.play().catch(() => {});
+      };
       v.addEventListener('loadedmetadata', onmeta);
+      lastFix.current[camId] = performance.now();
       return true;
     }
-    // mesmo segmento: corrige deriva
-    const target = t - seg.t;
-    if (Math.abs(v.currentTime - target) > 0.4) { try { v.currentTime = target; } catch {} }
-    if (play && v.paused) v.play().catch(() => {});
+    const base = Math.min(speedRef.current, 4);
+    if (!isMaster && v.readyState >= 1 && !v.seeking) {
+      const drift = v.currentTime - (t - seg.t);            // + adiantado, − atrasado
+      const now = performance.now();
+      const lim = 0.8 * Math.max(1, speedRef.current);
+      if (Math.abs(drift) > lim && now - (lastFix.current[camId] || 0) > 1500) {
+        lastFix.current[camId] = now;                       // longe demais: pula (no máx. 1x a cada 1,5s)
+        try { v.currentTime = Math.max(0, t - seg.t); } catch {}
+        v.playbackRate = base;
+      } else if (play && Math.abs(drift) > 0.12) {
+        v.playbackRate = base * (drift > 0 ? 0.9 : 1.1);    // perto: acerta acelerando/freando de leve
+      } else if (v.playbackRate !== base) {
+        v.playbackRate = base;
+      }
+    }
+    if (play && v.paused && !v.ended) v.play().catch(() => {});
     if (!play && !v.paused) v.pause();
     return true;
   };
 
-  // escolhe a câmera "mestre" (primeira com gravação em t)
+  // câmera "mestre": fica a mesma enquanto ela tiver gravação em t; senão, a primeira que tiver
+  const masterRef = useRef(null);
   const masterAt = (t) => {
+    const m = masterRef.current;
+    if (m && segAt(index[m] || [], t) >= 0) return m;
     for (const c of cameras) { if (segAt(index[c.id] || [], t) >= 0) return c.id; }
     return null;
   };
@@ -116,20 +142,39 @@ export function ReviewView({ cameras, nameOf, go2rtc, onExit }) {
   };
 
   // loop de sincronização (5 Hz)
+  const waitSince = useRef(0);   // desde quando o mestre está carregando/travado
   useEffect(() => {
     if (!range) return;
     const id = setInterval(() => {
       let t = tRef.current;
       const play = playingRef.current;
+      let mid = null, hold = false;
       if (play) {
-        const mid = masterAt(t);
+        mid = masterAt(t);
+        if (mid !== masterRef.current) { masterRef.current = mid; waitSince.current = 0; }
         if (mid) {
           const v = vids.current[mid];
           const list = index[mid]; const i = segAt(list, t);
-          if (v && i >= 0 && v.readyState >= 2 && cur.current[mid] === list[i].f) {
-            t = list[i].t + v.currentTime;        // tempo guiado pelo vídeo mestre
+          const seg = list[i];
+          const ready = v && v.readyState >= 2 && !v.seeking && cur.current[mid] === seg.f;
+          if (ready) {
+            waitSince.current = 0;
+            const vt = seg.t + v.currentTime;
+            const dur = isFinite(v.duration) ? v.duration : seg.d;
+            if (v.ended || v.currentTime >= dur - 0.05) {
+              t = Math.max(t, seg.t + Math.max(dur, seg.d) + 0.3);   // fim do arquivo: passa pro próximo
+            } else if (vt > t) {
+              t = vt;                                // tempo guiado pelo vídeo mestre, nunca para trás
+            } else if (t - vt > 1.5) {
+              try { v.currentTime = Math.max(0, t - seg.t); } catch {}   // mestre recém-escolhido e atrasado
+            }
           } else {
-            t = t + 0.2 * speedRef.current;        // ainda carregando: avança no relógio
+            // carregando/bufferizando: SEGURA o relógio (antes ele seguia andando e depois voltava).
+            // Só anda sozinho se o mestre ficar travado demais (arquivo com problema).
+            const now = performance.now();
+            if (!waitSince.current) waitSince.current = now;
+            if (now - waitSince.current > 4000) t = t + 0.2 * speedRef.current;
+            else hold = now - waitSince.current > 300;   // as outras esperam junto (não disparam na frente)
           }
           if (t >= range.end - 0.1) { t = range.end; playingRef.current = false; setPlaying(false); }
         } else {
@@ -138,7 +183,7 @@ export function ReviewView({ cameras, nameOf, go2rtc, onExit }) {
         }
         tRef.current = t;
       }
-      for (const c of cameras) syncCam(c.id, tRef.current, playingRef.current);
+      for (const c of cameras) syncCam(c.id, tRef.current, playingRef.current && (c.id === mid || !hold), play && c.id === mid);
       setDispT(tRef.current);
     }, 200);
     return () => clearInterval(id);
@@ -148,7 +193,8 @@ export function ReviewView({ cameras, nameOf, go2rtc, onExit }) {
     const r = range; if (!r) return;
     t = Math.max(r.start, Math.min(r.end, t));
     tRef.current = t; setDispT(t);
-    for (const c of cameras) { cur.current[c.id] = cur.current[c.id]; syncCam(c.id, t, playingRef.current); }
+    masterRef.current = null; waitSince.current = 0;
+    for (const c of cameras) { lastFix.current[c.id] = 0; syncCam(c.id, t, playingRef.current, false); }
   };
   const togglePlay = () => setPlaying(p => !p);
   const step = (sec) => seekTo(tRef.current + sec);
