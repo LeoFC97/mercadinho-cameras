@@ -152,7 +152,8 @@ function Main {
   $env:FFPROBE = "$APP\bin\ffprobe.exe"
   Push-Location $APP
   Write-Host "  procurando cameras na rede (uns 30-60s)..."
-  & $PY -X utf8 scan_cameras.py 2>&1 | Out-Null
+  & $PY -X utf8 scan_cameras.py 2>&1 | Tee-Object -FilePath "$APP\logs\scan.log" | Select-String -Pattern 'Prov.veis c.meras|Sem porta 554|Traceback|Error' | ForEach-Object { Write-Host "  $_" }
+  if (-not (Test-Path "$APP\scan\cameras.json")) { Aviso "a varredura falhou (veja $APP\logs\scan.log); usando os IPs conhecidos" }
   & $PY -X utf8 setup_cameras.py --senha-arquivo $senhaF
   Pop-Location
   if (-not (Test-Path "$APP\go2rtc.yaml")) { Falha "nao gerou a configuracao das cameras" }
@@ -223,7 +224,7 @@ function Main {
     Set-Content -Path (Join-Path $desk 'Painel das Cameras.url') -Value "[InternetShortcut]`r`nURL=http://localhost:8099/" -Encoding ASCII
     $ws = New-Object -ComObject WScript.Shell
     $lnk = $ws.CreateShortcut((Join-Path $desk 'Reconfigurar cameras.lnk'))
-    $lnk.TargetPath = "$APP\reconfigurar.bat"; $lnk.WorkingDirectory = $APP; $lnk.Save()
+    $lnk.TargetPath = "$APP\reconfigurar-auto.bat"; $lnk.WorkingDirectory = $APP; $lnk.Save()
     Ok "atalhos 'Painel das Cameras' e 'Reconfigurar cameras' na area de trabalho"
   } catch { Aviso "nao criei os atalhos" }
 

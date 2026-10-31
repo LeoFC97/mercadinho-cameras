@@ -14,7 +14,8 @@ def testar(url):
     try:
         r = subprocess.run([os.environ.get("FFPROBE", "ffprobe"), "-v", "error", "-rtsp_transport", "tcp", "-timeout", "6000000",
                             "-select_streams", "v:0", "-show_entries", "stream=codec_name,width,height",
-                            "-of", "csv=p=0", url], capture_output=True, text=True, timeout=15)
+                            "-of", "csv=p=0", url], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=15)
         if r.returncode == 0 and r.stdout.strip(): return True, r.stdout.strip()
         err = re.sub(r"://[^:/]+:[^@]+@", "://***:***@", r.stderr or "").strip().splitlines()
         return False, (err[-1] if err else "falhou")

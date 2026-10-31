@@ -120,7 +120,12 @@ def tick():
             if not e: continue
             day = day_of(e)
             key = (cam, day)
-            if key not in indices: indices[key] = load_index(cam, day)
+            if key not in indices:
+                indices[key] = load_index(cam, day)
+                # descarta do índice o que foi apagado por fora (ex.: pela tela Disco do painel)
+                present = set(files)
+                for gone in [k for k in indices[key] if k not in present]:
+                    indices[key].pop(gone, None)
             idx = indices[key]
             if f in idx:   # já pontuado
                 continue
@@ -180,9 +185,15 @@ def tick():
     for cam in camlist:
         d = os.path.join(REC, cam)
         if os.path.isdir(d):
-            for f in os.listdir(d):
+            names = os.listdir(d)
+            have_mp4 = {day_of(seg_epoch(f)) for f in names if f.endswith(".mp4") and seg_epoch(f)}
+            for f in names:
                 if f.endswith(".json"):
-                    days.add(f[:-5])
+                    if f[:-5] in have_mp4:
+                        days.add(f[:-5])
+                    else:   # índice de um dia já sem vídeo (apagado): remove
+                        try: os.remove(os.path.join(d, f))
+                        except OSError: pass
     manifest = {
         "updated": round(now, 1),
         "cams": [{"id": c} for c in camlist],

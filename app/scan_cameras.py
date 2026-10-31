@@ -22,14 +22,24 @@ OUI_HINTS = {
     "FC:5F:49": "Dahua/ODM", "6C:1C:71": "Dahua/ODM", "A4:D5:C2": "Dahua/ODM",
 }
 
-def sh(cmd, timeout=10):
-    try:
-        return subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout).stdout
-    except Exception:
-        return ""
-
 IS_LINUX = platform.system() == "Linux"
 IS_WINDOWS = platform.system() == "Windows"
+
+def sh(cmd, timeout=10):
+    # Lê a saída como bytes e decodifica de forma tolerante: no Windows, comandos como
+    # `arp -a` respondem na codificação do console (CP850, com acentos em português) e
+    # não em UTF-8 — decodificar como texto derrubava a varredura inteira.
+    try:
+        kw = {"creationflags": 0x08000000} if IS_WINDOWS else {}
+        out = subprocess.run(cmd, shell=True, capture_output=True, timeout=timeout, **kw).stdout or b""
+    except Exception:
+        return ""
+    for enc in (("cp850", "utf-8") if IS_WINDOWS else ("utf-8",)):
+        try:
+            return out.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return out.decode("utf-8", errors="replace")
 
 def default_iface():
     if IS_LINUX:

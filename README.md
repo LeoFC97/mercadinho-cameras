@@ -3,7 +3,7 @@
 Sistema de câmeras para as Intelbras **iM3 C** (Wi‑Fi) do mercadinho. Ele faz quatro coisas:
 
 - junta todas as câmeras num **feed central** (go2rtc);
-- mostra um **painel React** com o ao vivo e uma tela de **Revisão**, onde você volta no tempo com todas as câmeras sincronizadas;
+- mostra um **painel React** com o ao vivo, uma tela de **Revisão**, onde você volta no tempo com todas as câmeras sincronizadas, e uma tela **Disco**, para ver o espaço usado por dia/câmera e apagar gravações pelo próprio painel;
 - **grava só quando há movimento**;
 - permite **acesso remoto** via Tailscale.
 
@@ -27,7 +27,8 @@ câmeras (RTSP, Wi-Fi) ──► go2rtc :1984 / :8554 ──► painel  http://<
 
 ### Principais arquivos em `app/`
 - `supervisor.py` — mantém tudo de pé: go2rtc, painel, uma gravação ffmpeg por câmera e a manutenção. Reinicia o que cair e escreve `logs/status.json`.
-- `painel_server.py` — servidor do painel. Suporta HTTP Range, necessário para o Safari/iPhone tocar as gravações.
+- `painel_server.py` — servidor do painel. Suporta HTTP Range, necessário para o Safari/iPhone tocar as gravações, e expõe a API de disco (`GET /api/disk`, `POST /api/disk/delete`) usada pela tela Disco.
+- `reconfigurar.py` / `reconfigurar-auto.bat` — Windows: refaz a varredura, testa a senha, gera a configuração e reinicia a tarefa, em segundo plano (log em `logs\reconfigurar.log`). É o alvo do atalho "Reconfigurar câmeras".
 - `gravador.py` — calcula o movimento de cada segmento e mantém só os trechos com movimento (± 2 segmentos de folga). Também gera o índice por câmera/dia e aplica o teto de disco.
 - `scan_cameras.py` → `setup_cameras.py` → `gen_config.py` — acham as câmeras na rede, testam a senha e geram o `go2rtc.yaml` e o `ui/config.js`.
 - `ui/` — painel React (React + htm embarcados em `ui/vendor/`, funciona sem internet).

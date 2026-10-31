@@ -114,3 +114,29 @@ body{
 .toast.show{opacity:1}
 ::-webkit-scrollbar{height:9px;width:9px}
 ::-webkit-scrollbar-thumb{background:var(--line2);border-radius:6px}
+
+/* ---------- Disco ---------- */
+.dpanel{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:16px 18px;margin:0 auto 14px;max-width:980px}
+.dhead{display:flex;align-items:center;gap:12px;margin-bottom:10px}
+.dtitle{font-size:14px;font-weight:650;margin-bottom:4px}
+.dsub{color:var(--muted);font-size:12.5px;margin-bottom:10px;line-height:1.45}
+.dbar{position:relative;height:14px;border-radius:999px;background:var(--bg);border:1px solid var(--line);overflow:hidden;display:flex;margin:6px 0 14px}
+.dbar .rec{background:linear-gradient(90deg,var(--accent2),var(--accent));height:100%}
+.dbar .other{background:rgba(135,152,173,.35);height:100%}
+.dbar .cap{position:absolute;top:0;bottom:0;width:2px;background:var(--warn);box-shadow:0 0 6px var(--warn)}
+.dactions{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:13px;flex-wrap:wrap}
+.dactions input{width:64px;font:inherit;color:var(--txt);background:var(--bg);border:1px solid var(--line2);border-radius:7px;padding:6px 8px;text-align:center}
+.drow{display:flex;align-items:center;gap:14px;padding:9px 10px;border-radius:9px;border:1px solid transparent;font-size:13px}
+.drow:hover{background:var(--panel2);border-color:var(--line)}
+.drow.open{background:var(--panel2);border-color:var(--line)}
+.drow.sub{padding:6px 10px 6px 28px;font-size:12.5px}
+.dsubrows{margin:2px 0 8px;border-left:2px solid var(--line2);margin-left:14px}
+.dname{font-weight:650;min-width:120px}
+.dname em{font-style:normal;color:var(--live);font-size:11px;margin-left:6px}
+.dsize{font-variant-numeric:tabular-nums;min-width:80px;color:var(--txt)}
+.dmeta{color:var(--muted);font-size:12px;font-weight:500}
+.dbtn{font:inherit;font-size:12.5px;font-weight:600;color:#ffb3c1;background:rgba(240,80,110,.12);border:1px solid rgba(240,80,110,.35);
+  border-radius:8px;padding:7px 12px;cursor:pointer;transition:.14s;white-space:nowrap}
+.dbtn:hover{background:rgba(240,80,110,.22)}
+.dbtn.armed{background:var(--off);color:#fff;border-color:var(--off)}
+.dbtn.small{padding:5px 10px;font-size:12px}

@@ -1,5 +1,6 @@
 import './vendor/video-cam.js';
 import { ReviewView } from './review.js';
+import { DiskView } from './disk.js';
 
 const { useState, useEffect, useRef, useCallback } = React;
 const html = htm.bind(React.createElement);
@@ -18,6 +19,7 @@ const I = {
   ext: html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3"/></svg>`,
   history: html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v5h5"/><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8"/><path d="M12 7v5l3 2"/></svg>`,
   edit: html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>`,
+  disk: html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>`,
   off: html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 1l22 22M21 21H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h2m4.5-3h5L17 6h4a2 2 0 0 1 2 2v9"/></svg>`,
 };
 
@@ -131,7 +133,7 @@ function App() {
   const [view, setView] = useState('grid');          // 'grid' | 'focus'
   const [focusId, setFocusId] = useState(CAMERAS[0]?.id);
   const [quality, setQuality] = useState('main');    // 'main' | 'sub'
-  const [mode, setMode] = useState('live');          // 'live' | 'review'
+  const [mode, setMode] = useState('live');          // 'live' | 'review' | 'disk'
   const [toast, setToast] = useState('');
   const [online, setOnline] = useState({});
   const clock = useClock();
@@ -172,6 +174,11 @@ function App() {
 
   if (mode === 'review')
     return html`<${ReviewView} cameras=${CAMERAS} nameOf=${nameOf} go2rtc=${G} onExit=${() => setMode('live')} />`;
+  if (mode === 'disk')
+    return html`<div style=${{height:'100%'}}>
+      <${DiskView} cameras=${CAMERAS} nameOf=${nameOf} onExit=${() => setMode('live')} onToast=${showToast} />
+      <div class=${'toast' + (toast ? ' show' : '')}>${toast}</div>
+    </div>`;
 
   return html`
     <div ref=${rootRef} style=${{ height: '100%', display: 'flex', flexDirection: 'column', background: 'var(--bg)' }}>
@@ -195,6 +202,7 @@ function App() {
           <button class=${quality === 'sub' ? 'on' : ''} onClick=${() => setQuality('sub')}>Econ</button>
         </div>
         <button class="iconbtn" title="Revisão — voltar no tempo" onClick=${() => setMode('review')} style=${{width:'auto',padding:'0 12px',gap:'7px'}}>${I.history}<span style=${{fontSize:'12.5px',fontWeight:600}}>Revisão</span></button>
+        <button class="iconbtn" title="Disco — espaço e limpeza das gravações" onClick=${() => setMode('disk')} style=${{width:'auto',padding:'0 12px',gap:'7px'}}>${I.disk}<span style=${{fontSize:'12.5px',fontWeight:600}}>Disco</span></button>
         <button class="iconbtn" title="Tela cheia (F)" onClick=${fsAll}>${I.full}</button>
       </div>
 
