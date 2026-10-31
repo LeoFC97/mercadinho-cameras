@@ -8,6 +8,9 @@
 #   dados/ia/export/             pacote no formato YOLO (Ultralytics) para treinar na RTX
 #
 # Sem bibliotecas extras: o ffmpeg tira as fotos e o próprio Python lê o tamanho do JPEG.
+#
+# REGRA: nada aqui é apagado pela limpeza de espaço (gravador.py e a tela Disco só mexem em ui/rec/).
+# Até o botão "Apagar foto" só move para dados/ia/lixeira.
 import os, re, io, json, time, glob, shutil, struct, zipfile, hashlib, secrets, threading, subprocess
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -358,14 +361,18 @@ class IA:
             return r
 
     def apagar(self, iid):
+        """Tira a foto da base, mas NÃO apaga: move para dados/ia/lixeira (dá para recuperar copiando de volta)."""
         r = self.obter(iid)
         if not r:
             raise KeyError("imagem não encontrada")
+        lix = os.path.join(self.dir, "lixeira")
+        os.makedirs(lix, exist_ok=True)
         for p in (os.path.join(self.img, iid + ".jpg"), os.path.join(self.img, iid + "_m.jpg"), self._rot_path(iid)):
-            try:
-                os.remove(p)
-            except OSError:
-                pass
+            if os.path.isfile(p):
+                try:
+                    shutil.move(p, os.path.join(lix, os.path.basename(p)))
+                except OSError:
+                    pass
 
     def resumo(self):
         rots = self._rotulos()
@@ -381,11 +388,12 @@ class IA:
             for c in vistos:
                 imgs_cl[c] = imgs_cl.get(c, 0) + 1
         classes = [dict(c, caixas=cont.get(c["id"], 0), imagens=imgs_cl.get(c["id"], 0)) for c in self.classes()]
-        tam = sum(os.path.getsize(p) for p in glob.glob(os.path.join(self.img, "*.jpg")))
+        tam = sum(os.path.getsize(os.path.join(r_, f)) for r_, _, fs in os.walk(self.dir) for f in fs)
+        lixeira = len(glob.glob(os.path.join(self.dir, "lixeira", "*.json")))
         por = lambda s: sum(1 for r in rots if r.get("status") == s)
         exp = os.path.join(self.exp, "dataset_yolo.zip")
         return {"classes": classes, "total": len(rots), "pendentes": por("pendente"), "rotuladas": por("rotulada"),
-                "fundo": por("fundo"), "caixas": sum(cont.values()), "disco_mb": round(tam / 1e6, 1),
+                "fundo": por("fundo"), "caixas": sum(cont.values()), "disco_mb": round(tam / 1e6, 1), "lixeira": lixeira,
                 "pasta": self.dir,
                 "export": {"tamanho": os.path.getsize(exp), "em": os.path.getmtime(exp)} if os.path.isfile(exp) else None}
 

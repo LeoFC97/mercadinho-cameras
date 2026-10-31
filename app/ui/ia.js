@@ -140,7 +140,11 @@ function Rotular({ resumo, recarregar, autor, onToast, abrirId, limparAbrir }) {
     setBusy(false);
   };
   const pular = () => { const lst = fila?.imagens || []; const i = lst.findIndex(x => x.id === img?.id); abrir(lst[(i + 1) % lst.length] || null); };
+  const [armApagar, setArmApagar] = useState(false);
+  useEffect(() => setArmApagar(false), [img?.id]);
   const apagarFoto = async () => {
+    if (!armApagar) { setArmApagar(true); setTimeout(() => setArmApagar(false), 4000); return; }
+    setArmApagar(false);
     try { await api('/api/ia/imagens/' + img.id + '/apagar', { json: {} });
       const resto = (fila?.imagens || []).filter(x => x.id !== img.id); setFila(f => ({ ...f, imagens: resto, total: (f?.total || 1) - 1 })); abrir(resto[0] || null); recarregar(); }
     catch (e) { onToast('Erro: ' + e.message); }
@@ -181,7 +185,7 @@ function Rotular({ resumo, recarregar, autor, onToast, abrirId, limparAbrir }) {
           <button class="iconbtn" style=${{ width: 'auto', padding: '0 12px', fontSize: '12.5px' }} onClick=${pular}>Pular</button>
           ${sel >= 0 ? html`<button class="dbtn small" onClick=${() => { setCaixas(caixas.filter((_, i) => i !== sel)); setSel(-1); }}>Apagar caixa</button>` : null}
           <span style=${{ flex: 1 }}></span>
-          <button class="dbtn small" onClick=${apagarFoto}>Apagar foto</button>
+          <button class=${'dbtn small' + (armApagar ? ' armed' : '')} onClick=${apagarFoto} title="Tira da base (vai para a lixeira da IA, nada é apagado de vez)">${armApagar ? 'Confirmar?' : 'Tirar foto da base'}</button>
         </div>`
       : html`<div class="vd-empty"><span>${fila ? 'Nenhuma foto para rotular. Vá em Capturar.' : 'Carregando…'}</span></div>`}
     </div>
@@ -371,7 +375,8 @@ function Exportar({ resumo, recarregar, onToast }) {
         ${ex ? html`<a class="vd-link" href="/api/ia/exportar.zip">⬇ Baixar pacote (${(ex.tamanho / 1e6).toFixed(1)} MB, de ${dataHora(ex.em)})</a>` : null}
       </div>
       ${res ? html`<div class="md-info">Pronto: ${res.imagens} fotos (${res.treino} treino, ${res.validacao} validação), ${res.produtos} produto(s).</div>` : null}
-      <div class="vd-muted" style=${{ marginTop: '10px' }}>Tudo fica guardado no notebook da loja em <code>${resumo?.pasta || 'dados/ia'}</code> (${resumo?.disco_mb ?? '…'} MB).</div>
+      <div class="vd-muted" style=${{ marginTop: '10px' }}>Tudo fica guardado no notebook da loja em <code>${resumo?.pasta || 'dados/ia'}</code> (${resumo?.disco_mb ?? '…'} MB).
+        🔒 A limpeza de espaço nunca apaga essa pasta${resumo?.lixeira ? ` — e as ${resumo.lixeira} foto(s) tiradas da base estão guardadas em lixeira/` : ''}.</div>
     </section>
   </div>`;
 }

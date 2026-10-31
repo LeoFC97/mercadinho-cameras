@@ -91,6 +91,13 @@ def _save_index(cam, day, idx):
     json.dump(idx, open(tmp, "w"))
     os.replace(tmp, p)
 
+def _protegidos():
+    """Tamanho do que a limpeza NUNCA apaga (fica fora de ui/rec)."""
+    def tam(d):
+        return sum(os.path.getsize(os.path.join(r, f)) for r, _, fs in os.walk(d) for f in fs) if os.path.isdir(d) else 0
+    return {"ia_bytes": tam(os.path.join(DADOS, "ia")), "clipes_bytes": tam(os.path.join(UI, "clipes")),
+            "outros_bytes": tam(DADOS) - tam(os.path.join(DADOS, "ia"))}
+
 def disk_report():
     """Uso de disco por câmera e por dia, mais pastas órfãs (câmeras que não estão mais na configuração)."""
     active = _cams_config()
@@ -124,6 +131,8 @@ def disk_report():
     disk["cap_gb"] = _env_float("CAP_GB", 18)
     disk["retention_hours"] = _env_float("RETENTION_HOURS", 72)
     disk["floor_gb"] = _env_float("FREE_FLOOR_GB", 12)
+    try: disk["protegidos"] = _protegidos()
+    except Exception: pass
     return {"updated": round(time.time(), 1), "disk": disk, "cams": cams,
             "days": sorted(days.values(), key=lambda x: x["day"])}
 
@@ -166,6 +175,7 @@ def disk_delete(req):
                 if cutoff_day is not None and fd >= cutoff_day: continue
                 if f == inprogress and fd == today: continue
                 p = os.path.join(d, f)
+                if not os.path.realpath(p).startswith(os.path.realpath(REC) + os.sep): continue   # trava: só gravações
                 try:
                     sz = os.path.getsize(p); os.remove(p); freed += sz; files += 1
                 except OSError: continue

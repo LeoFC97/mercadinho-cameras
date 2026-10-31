@@ -109,6 +109,7 @@ export function DiskView({ cameras, nameOf, onExit, onToast }) {
               <div>
                 <div class="dtitle">Uso do disco</div>
                 <div class="dsub">${disk.used_gb} GB em gravações · ${disk.free_gb} GB livres de ${disk.total_gb} GB · teto automático ${disk.cap_gb} GB · retenção ${Math.round(disk.retention_hours / 24)} dias</div>
+                ${disk.protegidos ? html`<div class="dsub" title="A limpeza (automática ou por esta tela) só apaga gravações. Isto aqui nunca é apagado.">🔒 Nunca apagados pela limpeza: fotos da IA ${fmtGB(disk.protegidos.ia_bytes)} · clipes das ocorrências ${fmtGB(disk.protegidos.clipes_bytes)}</div>` : null}
               </div>
             </div>
             <div class="dbar" title="azul = gravações · cinza = resto do sistema · marca = teto">

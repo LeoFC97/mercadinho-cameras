@@ -101,6 +101,17 @@ def all_segments():
                 if e: segs.append((cam, f, os.path.join(d, f), e))
     return segs
 
+def _so_gravacao(path):
+    """Trava de segurança: a limpeza só pode apagar arquivos dentro de ui/rec/<câmera>/.
+    Fotos da IA (dados/ia), clipes, ocorrências e planilhas NUNCA são apagados aqui."""
+    rp, base = os.path.realpath(path), os.path.realpath(REC) + os.sep
+    if not rp.startswith(base) or os.sep + "dados" + os.sep in rp:
+        raise RuntimeError(f"recusado: {path} está fora das gravações")
+    return path
+
+def _apagar(path):
+    os.remove(_so_gravacao(path))
+
 def tick():
     os.makedirs(REC, exist_ok=True)
     camlist = cams()
@@ -150,8 +161,8 @@ def tick():
                 to_delete.append((cam, day, f))
 
     for cam, day, f in to_delete:
-        try: os.remove(os.path.join(REC, cam, f))
-        except OSError: pass
+        try: _apagar(os.path.join(REC, cam, f))
+        except (OSError, RuntimeError): pass
         indices[(cam, day)].pop(f, None)
 
     # 3) teto de disco: se ui/rec > CAP ou disco livre < FLOOR, apaga os mais antigos (qualquer)
@@ -167,13 +178,13 @@ def tick():
         while i < len(segs) and (used_gb > CAP_GB * 0.95 or free_gb < FREE_FLOOR_GB + 1):
             cam, f, path, e = segs[i]; i += 1
             try:
-                sz = os.path.getsize(path); os.remove(path)
+                sz = os.path.getsize(path); _apagar(path)
                 used_gb -= sz / 1e9; free_gb += sz / 1e9
                 day = day_of(e)
                 if (cam, day) in indices: indices[(cam, day)].pop(f, None)
                 else:
                     ix = load_index(cam, day); ix.pop(f, None); save_index(cam, day, ix)
-            except OSError:
+            except (OSError, RuntimeError):
                 pass
 
     # 4) salvar índices e manifest
@@ -192,8 +203,8 @@ def tick():
                     if f[:-5] in have_mp4:
                         days.add(f[:-5])
                     else:   # índice de um dia já sem vídeo (apagado): remove
-                        try: os.remove(os.path.join(d, f))
-                        except OSError: pass
+                        try: _apagar(os.path.join(d, f))
+                        except (OSError, RuntimeError): pass
     manifest = {
         "updated": round(now, 1),
         "cams": [{"id": c} for c in camlist],
