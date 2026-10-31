@@ -1,0 +1,208 @@
+#!/usr/bin/env python3
+# gravador.py — manutenção da gravação: mede duração, pontua movimento, indexa,
+# mantém só os trechos com movimento (+folga) e respeita o teto de disco.
+# Roda em loop; os ffmpeg que segmentam são iniciados pelo gravador-run.sh / 5-gravador.command.
+import os, sys, json, subprocess, time, re, shutil
+from datetime import datetime
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+REC = os.path.join(HERE, "ui", "rec")           # servido pelo painel em /rec
+FFPROBE = os.environ.get("FFPROBE") or ("/opt/homebrew/bin/ffprobe" if os.path.exists("/opt/homebrew/bin/ffprobe") else "ffprobe")
+FFMPEG = os.environ.get("FFMPEG") or ("/opt/homebrew/bin/ffmpeg" if os.path.exists("/opt/homebrew/bin/ffmpeg") else "ffmpeg")
+
+# ---- parâmetros (ajustáveis) ----
+SEG_SECONDS       = float(os.environ.get("SEG_SECONDS", "12"))       # duração alvo de cada segmento
+MOTION_THRESHOLD  = float(os.environ.get("MOTION_THRESHOLD", "0.8"))      # YAVG médio do quadro-diferença p/ "movimento" (conservador: mantém mais)
+SCORE_FPS         = float(os.environ.get("SCORE_FPS", "3"))        # amostragem p/ pontuar movimento
+KEEP_MARGIN_SEGS  = int(float(os.environ.get("KEEP_MARGIN_SEGS", "2")))        # mantém N segmentos vizinhos de um com movimento (pré/pós)
+CAP_GB            = float(os.environ.get("CAP_GB", "18.0"))     # tamanho máximo de ui/rec
+FREE_FLOOR_GB     = float(os.environ.get("FREE_FLOOR_GB", "12.0"))     # nunca deixar o disco abaixo disso (apara os mais antigos)
+RETENTION_HOURS   = float(os.environ.get("RETENTION_HOURS", "72"))       # descarta eventos mais antigos que isso
+GRACE_HOURS       = float(os.environ.get("GRACE_HOURS", "2"))        # NUNCA poda por falta de movimento nas últimas N horas (segurança)
+LOOP_SECONDS      = float(os.environ.get("LOOP_SECONDS", "8"))
+
+NOWIN = {"creationflags": 0x08000000} if os.name == "nt" else {}   # sem janela de console no Windows
+
+TS_RE = re.compile(r"(\d{8})_(\d{6})\.mp4$")
+
+def cams():
+    out = []
+    inside = False
+    for line in open(os.path.join(HERE, "go2rtc.yaml")):
+        if line.startswith("streams:"): inside = True; continue
+        if inside and re.match(r"^\S", line): inside = False
+        m = re.match(r"^  ([\w-]+):", line)
+        if inside and m and not m.group(1).endswith("_sub"):
+            out.append(m.group(1))
+    return out
+
+def seg_epoch(fname):
+    m = TS_RE.search(fname)
+    if not m: return None
+    try:
+        return datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S").timestamp()
+    except Exception:
+        return None
+
+def day_of(epoch):
+    return datetime.fromtimestamp(epoch).strftime("%Y-%m-%d")
+
+def probe_dur(path):
+    try:
+        r = subprocess.run([FFPROBE, "-v", "error", "-show_entries", "format=duration",
+                            "-of", "csv=p=0", path], capture_output=True, text=True, timeout=20, **NOWIN)
+        return round(float(r.stdout.strip()), 2)
+    except Exception:
+        return float(SEG_SECONDS)
+
+def motion_score(path):
+    # média do YAVG do quadro-diferença (quanto muda entre frames) ~ quantidade de movimento
+    cmd = [FFMPEG, "-nostdin", "-v", "error", "-i", path,
+           "-vf", f"fps={SCORE_FPS},tblend=all_mode=difference,signalstats,metadata=print:key=lavfi.signalstats.YAVG:file=-",
+           "-an", "-f", "null", "-"]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=40, **NOWIN)
+    except Exception:
+        return MOTION_THRESHOLD * 5
+    vals = [float(x) for x in re.findall(r"YAVG=([0-9.]+)", r.stdout + r.stderr)]
+    if not vals: return MOTION_THRESHOLD * 5   # não conseguiu medir -> trata como movimento (mantém)
+    return round(sum(vals) / len(vals), 3)
+
+def load_index(cam, day):
+    p = os.path.join(REC, cam, f"{day}.json")
+    if os.path.exists(p):
+        try: return json.load(open(p))
+        except Exception: return {}
+    return {}
+
+def save_index(cam, day, idx):
+    p = os.path.join(REC, cam, f"{day}.json")
+    tmp = p + ".tmp"
+    json.dump(idx, open(tmp, "w"))
+    os.replace(tmp, p)
+
+def dir_size_bytes(path):
+    total = 0
+    for root, _, files in os.walk(path):
+        for f in files:
+            try: total += os.path.getsize(os.path.join(root, f))
+            except OSError: pass
+    return total
+
+def all_segments():
+    # lista (cam, fname, path, epoch) de todos os .mp4
+    segs = []
+    for cam in cams():
+        d = os.path.join(REC, cam)
+        if not os.path.isdir(d): continue
+        for f in os.listdir(d):
+            if f.endswith(".mp4"):
+                e = seg_epoch(f)
+                if e: segs.append((cam, f, os.path.join(d, f), e))
+    return segs
+
+def tick():
+    os.makedirs(REC, exist_ok=True)
+    camlist = cams()
+    now = time.time()
+    # mapa de índices por (cam, day)
+    indices = {}
+
+    # 1) pontuar segmentos novos (menos o mais recente de cada câmera = ainda gravando)
+    for cam in camlist:
+        d = os.path.join(REC, cam)
+        if not os.path.isdir(d): continue
+        files = sorted(f for f in os.listdir(d) if f.endswith(".mp4"))
+        if not files: continue
+        inprogress = files[-1]
+        for f in files:
+            e = seg_epoch(f)
+            if not e: continue
+            day = day_of(e)
+            key = (cam, day)
+            if key not in indices: indices[key] = load_index(cam, day)
+            idx = indices[key]
+            if f in idx:   # já pontuado
+                continue
+            if f == inprogress:   # ainda gravando, pontua na próxima volta
+                continue
+            path = os.path.join(d, f)
+            idx[f] = {"t": round(e, 2), "d": probe_dur(path), "m": motion_score(path)}
+
+    # 2) marcar "manter" por movimento + margem, por câmera/dia
+    to_delete = []
+    for (cam, day), idx in indices.items():
+        items = sorted(idx.items(), key=lambda kv: kv[1]["t"])
+        keep = [False] * len(items)
+        for i, (f, meta) in enumerate(items):
+            if meta["m"] >= MOTION_THRESHOLD:
+                for j in range(max(0, i - KEEP_MARGIN_SEGS), min(len(items), i + KEEP_MARGIN_SEGS + 1)):
+                    keep[j] = True
+        for i, (f, meta) in enumerate(items):
+            age = now - (meta["t"] + meta["d"])
+            # retenção e poda de trechos sem movimento (depois de uma folga de 90s p/ dar tempo da margem)
+            if age > RETENTION_HOURS * 3600 or (not keep[i] and age > GRACE_HOURS * 3600):
+                to_delete.append((cam, day, f))
+
+    for cam, day, f in to_delete:
+        try: os.remove(os.path.join(REC, cam, f))
+        except OSError: pass
+        indices[(cam, day)].pop(f, None)
+
+    # 3) teto de disco: se ui/rec > CAP ou disco livre < FLOOR, apaga os mais antigos (qualquer)
+    try:
+        du = shutil.disk_usage(REC)
+        free_gb = du.free / 1e9
+    except Exception:
+        free_gb = 999
+    used_gb = dir_size_bytes(REC) / 1e9
+    if used_gb > CAP_GB or free_gb < FREE_FLOOR_GB:
+        segs = sorted(all_segments(), key=lambda s: s[3])  # mais antigo primeiro
+        i = 0
+        while i < len(segs) and (used_gb > CAP_GB * 0.95 or free_gb < FREE_FLOOR_GB + 1):
+            cam, f, path, e = segs[i]; i += 1
+            try:
+                sz = os.path.getsize(path); os.remove(path)
+                used_gb -= sz / 1e9; free_gb += sz / 1e9
+                day = day_of(e)
+                if (cam, day) in indices: indices[(cam, day)].pop(f, None)
+                else:
+                    ix = load_index(cam, day); ix.pop(f, None); save_index(cam, day, ix)
+            except OSError:
+                pass
+
+    # 4) salvar índices e manifest
+    days = set()
+    for (cam, day), idx in indices.items():
+        save_index(cam, day, idx)
+        if idx: days.add(day)
+    # dias existentes (mesmo sem alteração nesta volta)
+    for cam in camlist:
+        d = os.path.join(REC, cam)
+        if os.path.isdir(d):
+            for f in os.listdir(d):
+                if f.endswith(".json"):
+                    days.add(f[:-5])
+    manifest = {
+        "updated": round(now, 1),
+        "cams": [{"id": c} for c in camlist],
+        "days": sorted(days),
+        "seg_seconds": SEG_SECONDS,
+        "disk": {"used_gb": round(used_gb, 2), "cap_gb": CAP_GB, "free_gb": round(free_gb, 1)},
+    }
+    tmp = os.path.join(REC, "manifest.json.tmp")
+    json.dump(manifest, open(tmp, "w"))
+    os.replace(tmp, os.path.join(REC, "manifest.json"))
+
+def main():
+    print(f"gravador: manutenção a cada {LOOP_SECONDS}s | rec={REC}")
+    print(f"  movimento>={MOTION_THRESHOLD}  teto={CAP_GB}GB  piso_livre={FREE_FLOOR_GB}GB  retencao={RETENTION_HOURS}h")
+    while True:
+        try:
+            tick()
+        except Exception as e:
+            print("erro no tick:", e)
+        time.sleep(LOOP_SECONDS)
+
+if __name__ == "__main__":
+    main()

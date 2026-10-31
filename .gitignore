@@ -1,0 +1,25 @@
+# segredos / configuracao local (gerados na instalacao) - nunca versionar
+senha*.txt
+chaves.txt
+go2rtc.yaml
+gravador.env
+app/ui/config.js
+*.key
+# dados locais
+app/ui/rec/
+app/scan/
+app/logs/
+scan/
+logs/
+downloads/
+# binarios baixados na instalacao
+go2rtc
+go2rtc.exe
+app/go2rtc*
+app/python/
+app/ffmpeg/
+# instaladores montados (vao como Release)
+dist/
+__pycache__/
+*.pyc
+.DS_Store

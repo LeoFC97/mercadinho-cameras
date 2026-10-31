@@ -1,0 +1,84 @@
+#!/bin/bash
+# mercadinho — administração do servidor de câmeras.
+APP=/opt/mercadinho-cameras
+SVCS="mercadinho-go2rtc mercadinho-painel mercadinho-gravador"
+precisa_root(){ [ "$(id -u)" = 0 ] || { echo "Use: sudo mercadinho $*"; exit 1; }; }
+
+case "${1:-ajuda}" in
+  status)
+    echo "== Serviços =="; for s in $SVCS; do printf "  %-22s %s\n" "$s" "$(systemctl is-active $s)"; done
+    echo "== Câmeras (go2rtc) =="
+    curl -s http://127.0.0.1:1984/api/streams | python3 -c "
+import sys,json
+try:
+  d=json.load(sys.stdin)
+  for k,v in d.items():
+    if k.endswith('_sub'): continue
+    prod=(v or {}).get('producers') or []
+    print('  %-10s %s' % (k, 'conectada' if prod else 'aguardando'))
+except Exception: print('  go2rtc não respondeu')"
+    echo "== Gravação =="; du -sh $APP/ui/rec 2>/dev/null | sed 's/^/  usado: /'; df -h $APP | tail -1 | awk '{print "  disco livre: "$4" de "$2}'
+    echo "== Acesso =="; "$0" url
+    ;;
+  url)
+    LIP=$(hostname -I 2>/dev/null | awk '{print $1}')
+    echo "  Na rede local:   http://$LIP:8099   (bloqueado pelo firewall; use o Tailscale)"
+    if command -v tailscale >/dev/null && tailscale status >/dev/null 2>&1; then
+      TS=$(tailscale status --json 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['Self']['DNSName'].rstrip('.'))" 2>/dev/null)
+      TIP=$(tailscale ip -4 2>/dev/null | head -1)
+      echo "  De qualquer lugar (Tailscale): http://${TS:-$TIP}:8099   (ou http://$TIP:8099)"
+    else
+      echo "  Tailscale não conectado. Rode: sudo tailscale up --ssh --hostname=mercadinho-cameras --qr"
+    fi
+    ;;
+  logs)
+    case "${2:-gravador}" in go2rtc|painel|gravador) journalctl -u "mercadinho-$2" -f -n 50 ;; *) echo "Use: mercadinho logs [go2rtc|painel|gravador]";; esac
+    ;;
+  reiniciar)
+    precisa_root "$@"; systemctl restart $SVCS && echo "Reiniciado."
+    ;;
+  reconfigurar)
+    precisa_root "$@"
+    echo "Procurando câmeras na rede..."; ( cd $APP && python3 scan_cameras.py ) | tail -8
+    python3 $APP/setup_cameras.py --senha-arquivo /etc/mercadinho/senha
+    chown -R cameras:cameras $APP; systemctl restart $SVCS; echo "Pronto."
+    ;;
+  senha)
+    precisa_root "$@"
+    read -r -s -p "Nova senha RTSP das câmeras: " PW </dev/tty; echo
+    umask 077; printf '%s' "$PW" > /etc/mercadinho/senha
+    "$0" reconfigurar
+    ;;
+  wifi)
+    precisa_root "$@"
+    SSID="$2"; PASS="$3"
+    [ -n "$SSID" ] || { echo 'Use: sudo mercadinho wifi "NOME-DA-REDE" "senha"'; exit 1; }
+    IF=$(ls /sys/class/net | grep -E '^wl' | head -1)
+    [ -n "$IF" ] || { echo "Placa Wi-Fi não encontrada."; exit 1; }
+    esc(){ printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+    umask 077
+    cat > /etc/netplan/90-mercadinho-wifi.yaml <<NP
+network:
+  version: 2
+  wifis:
+    $IF:
+      dhcp4: true
+      access-points:
+        "$(esc "$SSID")":
+          password: "$(esc "$PASS")"
+NP
+    netplan apply && echo "Conectando em \"$SSID\" pela $IF... (confira com: ip addr show $IF)"
+    ;;
+  *)
+    cat <<H
+mercadinho — servidor de câmeras
+  mercadinho status              situação dos serviços, câmeras, disco e endereços
+  mercadinho url                 endereços para abrir o painel
+  mercadinho logs [go2rtc|painel|gravador]
+  sudo mercadinho reiniciar      reinicia tudo
+  sudo mercadinho reconfigurar   procura as câmeras de novo (ex.: mudaram de IP) e aplica
+  sudo mercadinho senha          troca a senha RTSP das câmeras
+  sudo mercadinho wifi "REDE" "senha"   conecta o notebook a uma rede Wi-Fi
+H
+    ;;
+esac
