@@ -47,6 +47,8 @@ export function DiagnosticoModal({ cameras, nameOf, qualidade, onClose, onToast 
     const buracos = cams.filter(([, c]) => c.resumo && c.resumo.buracos_por_min >= 3);
     if (buracos.length) achados.push({ grave: true, txt: `${buracos.map(([id]) => nome(id)).join(', ')}: a câmera está perdendo quadros no caminho até o notebook (Wi-Fi fraco ou congestionado). O vídeo gravado já sai com pulos — melhore o sinal (repetidor/roteador mais perto) ou reduza a qualidade no app da câmera.` });
     if (srv.cpu != null && srv.cpu >= 85) achados.push({ grave: true, txt: `O notebook está muito ocupado (${Math.round(srv.cpu)}% de CPU). Ele demora para entregar os vídeos.` });
+    const nav = (srv.processos || []).filter(p => /^(chrome|msedge|firefox|opera|brave|iexplore)$/i.test(p.nome) && p.cpu >= 15);
+    if (nav.length) achados.push({ grave: true, txt: `Tem um navegador aberto no próprio notebook (${nav.map(p => p.nome).join(', ')}) usando ${Math.round(nav.reduce((a, p) => a + p.cpu, 0))}% do processador — provavelmente o painel aberto lá. Feche: o notebook não precisa do painel aberto para gravar.` });
     if (res.some(r => r.keyframe_s > 4)) achados.push({ grave: false, txt: 'Os quadros-chave estão espaçados (mais de 4 s): pular na linha do tempo demora mais para mostrar a imagem.' });
   }
   if (rede && rede.mbps != null) {
@@ -91,6 +93,12 @@ export function DiagnosticoModal({ cameras, nameOf, qualidade, onClose, onToast 
         <div><small>Quadros perdidos neste aparelho</small><b>${q && q.total ? Math.round(q.perdidos / q.total * 100) + '%' : '—'}</b></div>
         <div><small>Disco livre</small><b>${srv.disco_livre_gb ?? '—'} GB</b></div>
       </div>
+      ${(srv.processos || []).length ? html`<div class="dg-sec">
+        <div class="md-rot">O que está usando o processador do notebook agora</div>
+        <table class="ia-tab"><thead><tr><th>Programa</th><th>CPU</th><th>Memória</th></tr></thead>
+        <tbody>${srv.processos.map(p => html`<tr key=${p.nome}><td>${p.nome}${p.qtd > 1 ? html` <small class="vd-muted">×${p.qtd}</small>` : null}</td>
+          <td class=${p.cpu >= 30 ? 'dg-ruim' : ''}>${p.cpu}%</td><td>${p.mem_mb} MB</td></tr>`)}</tbody></table>
+      </div>` : null}
       <div class="dg-sec">
         <div class="md-rot">Qualidade da gravação</div>
         <div class="ia-linha">

@@ -88,9 +88,11 @@ def cams():
         if inside and m and not m.group(1).endswith("_sub"): out.append(m.group(1))
     return out
 
+BAIXA = 0x00004000 if IS_WIN else 0   # BELOW_NORMAL_PRIORITY_CLASS: análise cede a vez para gravação e painel
+
 class Proc:
-    def __init__(self, name, args):
-        self.name, self.args, self.p, self.restarts = name, args, None, 0
+    def __init__(self, name, args, baixa=False):
+        self.name, self.args, self.p, self.restarts, self.baixa = name, args, None, 0, baixa
     def ensure(self):
         if self.p is not None and self.p.poll() is None:
             return
@@ -102,8 +104,11 @@ class Proc:
             try: os.replace(lf, lf + ".old")
             except OSError: pass
         out = open(lf, "ab")
+        kw = {"creationflags": NOWIN | (BAIXA if self.baixa else 0)}
+        if not IS_WIN and self.baixa:
+            kw["preexec_fn"] = lambda: os.nice(10)
         self.p = subprocess.Popen(self.args, cwd=HERE, stdout=out, stderr=subprocess.STDOUT,
-                                  stdin=subprocess.DEVNULL, creationflags=NOWIN)
+                                  stdin=subprocess.DEVNULL, **kw)
         out.close()
     def stop(self):
         if self.p is not None and self.p.poll() is None:
@@ -135,8 +140,8 @@ def build_procs():
             "-segment_time", str(SEG), "-reset_timestamps", "1", "-strftime", "1",
             "-segment_format_options", "movflags=+faststart",   # índice no começo: abre mais rápido na Revisão
             os.path.join(REC, cam, "%Y%m%d_%H%M%S.mp4")]))
-    procs.append(Proc("manutencao", PYX + [os.path.join(HERE, "gravador.py")]))
-    procs.append(Proc("prateleiras", PYX + [os.path.join(HERE, "prateleiras.py")]))   # zonas: o que saiu da prateleira
+    procs.append(Proc("manutencao", PYX + [os.path.join(HERE, "gravador.py")], baixa=True))
+    procs.append(Proc("prateleiras", PYX + [os.path.join(HERE, "prateleiras.py")], baixa=True))   # zonas: o que saiu da prateleira
     return procs
 
 def reconfigurar():
@@ -223,8 +228,31 @@ def pedido():
             return nome
     return None
 
+def otimizar_windows():
+    """Ajustes leves do Windows para o notebook trabalhar como gravador (a cada início):
+    - a pesquisa do Windows não indexa as gravações (milhares de arquivos novos por dia);
+    - plano de energia de alto desempenho (o notebook fica na tomada).
+    Desligue com OTIMIZAR_WINDOWS=0 no gravador.env."""
+    if not IS_WIN or os.environ.get("OTIMIZAR_WINDOWS", "1") != "1":
+        return
+    for d in (os.path.join(HERE, "ui", "rec"), os.path.join(HERE, "dados"), os.path.join(HERE, "ui", "clipes")):
+        if os.path.isdir(d):
+            try:
+                subprocess.run(["attrib", "+I", d, "/S", "/D"], capture_output=True, timeout=300, creationflags=NOWIN)
+                subprocess.run(["attrib", "+I", d], capture_output=True, timeout=30, creationflags=NOWIN)
+            except Exception:
+                pass
+    log("otimização: pesquisa do Windows não indexa as gravações")
+    try:
+        r = subprocess.run(["powercfg", "/setactive", "SCHEME_MIN"], capture_output=True, timeout=30, creationflags=NOWIN)
+        log("otimização: plano de energia alto desempenho" if r.returncode == 0 else "otimização: plano alto desempenho indisponível neste notebook")
+    except Exception:
+        pass
+
 def main():
     log(f"supervisor iniciando ({platform.system()}) em {HERE}")
+    try: otimizar_windows()
+    except Exception as e: log(f"otimização do Windows falhou: {e}")
     procs = build_procs()
 
     def bye(*_):

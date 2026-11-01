@@ -31,6 +31,7 @@ CALMA_S = float(os.environ.get("PRAT_CALMA_S", "2.5"))     # zona parada por tan
 ITEM_TH = float(os.environ.get("PRAT_ITEM_TH", "12"))      # quanto o item precisa mudar além do resto da zona
 OCUP_MAX = float(os.environ.get("PRAT_OCUP_MAX", "0.18"))  # fração da zona diferente do "antes" que ainda indica mão/pessoa na frente
 MAX_INTER_S = float(os.environ.get("PRAT_MAX_S", "120"))   # interação mais longa que isso: fecha mesmo assim
+MIN_M = float(os.environ.get("PRAT_MIN_M", "0.5"))         # trecho sem movimento (nota do gravador): não decodifica
 
 
 def _ffmpeg():
@@ -302,21 +303,45 @@ class Analisador:
         self.zonas = novas
         log(f"config carregada: {sum(len(v) for v in novas.values())} zona(s) em {len(novas)} câmera(s)")
 
+    def _indice(self, cam, dia):
+        """Índice do dia da câmera, relido só quando o arquivo muda."""
+        p = os.path.join(REC, cam, dia + ".json")
+        try:
+            mt = os.path.getmtime(p)
+        except OSError:
+            return {}
+        if not hasattr(self, "_idx"):
+            self._idx = {}
+        c = self._idx.get(p)
+        if not c or c[0] != mt:
+            c = (mt, _ler_json(p, {}))
+            self._idx[p] = c
+        return c[1]
+
     def _segmentos_novos(self, cam):
         desde = float(self.estado.get(cam, time.time() - float(os.environ.get("PRAT_DESDE_H", "3")) * 3600))
         segs = []
         hoje = date.today()
         for d in (hoje - timedelta(days=1), hoje):
-            raw = _ler_json(os.path.join(REC, cam, d.strftime("%Y-%m-%d") + ".json"), {})
-            for f, v in raw.items():
+            for f, v in self._indice(cam, d.strftime("%Y-%m-%d")).items():
                 if v["t"] > desde + 0.5:
                     p = os.path.join(REC, cam, f)
                     if os.path.isfile(p):
-                        segs.append((v["t"], v.get("d", 12), p, f))
+                        segs.append((v["t"], v.get("d", 12), p, f, v.get("m", 99)))
         return sorted(segs)[:30]
 
+    def _ultimo_quadro(self, path):
+        """Só o último quadro do trecho (barato) — para trechos parados."""
+        args = [_ffmpeg(), "-nostdin", "-v", "error", "-sseof", "-0.6", "-i", path, "-an", "-frames:v", "1",
+                "-vf", f"scale={W}:{H},format=gray", "-f", "rawvideo", "pipe:1"]
+        try:
+            p = subprocess.run(args, stdin=subprocess.DEVNULL, capture_output=True, timeout=30, **_kw())
+        except subprocess.TimeoutExpired:
+            return None
+        return p.stdout[:W * H] if len(p.stdout) >= W * H else None
+
     def _quadros(self, path):
-        args = [_ffmpeg(), "-nostdin", "-v", "error", "-i", path, "-an",
+        args = [_ffmpeg(), "-nostdin", "-v", "error", "-threads", "1", "-i", path, "-an",
                 "-vf", f"fps={FPS},scale={W}:{H},format=gray", "-f", "rawvideo", "pipe:1"]
         try:
             p = subprocess.run(args, stdin=subprocess.DEVNULL, capture_output=True, timeout=90, **_kw())
@@ -332,7 +357,18 @@ class Analisador:
             return 0
         feitos = 0
         for cam, zs in self.zonas.items():
-            for t0, dur, path, fname in self._segmentos_novos(cam):
+            for t0, dur, path, fname, m in self._segmentos_novos(cam):
+                if m < MIN_M and not any(z.ini for z in zs):
+                    # trecho parado: não precisa decodificar tudo, só guarda o último quadro como "antes"
+                    q = self._ultimo_quadro(path)
+                    if q:
+                        tf = t0 + max(0.0, dur - 0.5)
+                        self.prev[cam] = (tf, q)
+                        for z in zs:
+                            z.quieto = (tf, q)
+                    self.estado[cam] = t0
+                    feitos += 1
+                    continue
                 qs = self._quadros(path)
                 for k, q in enumerate(qs):
                     self._quadro(cam, zs, t0 + k / FPS, q, path, t0)

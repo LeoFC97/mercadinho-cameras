@@ -94,6 +94,30 @@ def cpu_percent():
         return None
 
 
+def processos_cpu():
+    """Os programas que mais usam o processador agora (amostra de 2s)."""
+    try:
+        if IS_WIN:
+            ps = ("$n=[Environment]::ProcessorCount;$a=@{};Get-Process|%{$a[$_.Id]=$_.CPU};Start-Sleep -Seconds 2;"
+                  "Get-Process|%{ $c=$_.CPU; if($c -ne $null -and $a.ContainsKey($_.Id) -and $a[$_.Id] -ne $null){ "
+                  "[pscustomobject]@{n=$_.ProcessName;c=[math]::Round(($c-$a[$_.Id])/2/$n*100,1);m=[math]::Round($_.WorkingSet64/1MB)} } }|"
+                  "Group-Object n|%{[pscustomobject]@{n=$_.Name;c=($_.Group|Measure-Object c -Sum).Sum;m=($_.Group|Measure-Object m -Sum).Sum;q=$_.Count}}|"
+                  "Sort-Object c -Descending|Select-Object -First 8|ConvertTo-Json -Compress")
+            p = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps], capture_output=True, timeout=25, **_kw())
+            j = json.loads(p.stdout.decode("utf-8", "replace") or "[]")
+            j = j if isinstance(j, list) else [j]
+            return [{"nome": x["n"], "cpu": round(float(x["c"] or 0), 1), "mem_mb": int(x["m"] or 0), "qtd": int(x.get("q") or 1)} for x in j]
+        p = subprocess.run(["ps", "-eo", "comm,%cpu,rss", "--sort=-%cpu"], capture_output=True, timeout=10)
+        out = []
+        for l in p.stdout.decode().splitlines()[1:9]:
+            parts = l.split()
+            if len(parts) >= 3:
+                out.append({"nome": parts[0], "cpu": float(parts[1]), "mem_mb": int(parts[2]) // 1024, "qtd": 1})
+        return out
+    except Exception:
+        return []
+
+
 def diagnostico(here, rec_dir, cams):
     env = ler_env(here)
     out = {"rec_stream": env.get("REC_STREAM", os.environ.get("REC_STREAM", "sub")), "cameras": {}, "em": time.time()}
@@ -131,6 +155,7 @@ def diagnostico(here, rec_dir, cams):
                       "keyframe_s": round(sum(r["duracao"] for r in ok) / max(1, sum(r["keyframes"] for r in ok)), 1)}
         out["cameras"][cam] = {"segmentos": res, "resumo": resumo}
     out["cpu"] = cpu_percent()
+    out["processos"] = processos_cpu()
     try:
         du = shutil.disk_usage(rec_dir)
         out["disco_livre_gb"] = round(du.free / 1e9, 1)

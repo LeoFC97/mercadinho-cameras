@@ -47,7 +47,46 @@ def seg_epoch(fname):
 def day_of(epoch):
     return datetime.fromtimestamp(epoch).strftime("%Y-%m-%d")
 
+def mp4_duracao(path):
+    """Duração lida direto do cabeçalho do MP4 (átomo mvhd) — sem abrir um ffprobe por trecho."""
+    import struct
+    with open(path, "rb") as f:
+        f.seek(0, 2); fim = f.tell(); pos = 0
+        while pos + 8 <= fim:
+            f.seek(pos)
+            tam, tipo = struct.unpack(">I4s", f.read(8)); cab = 8
+            if tam == 1:
+                tam = struct.unpack(">Q", f.read(8))[0]; cab = 16
+            elif tam == 0:
+                tam = fim - pos
+            if tam < cab:
+                return None
+            if tipo == b"moov":
+                q, lim = pos + cab, pos + tam
+                while q + 8 <= lim:
+                    f.seek(q)
+                    t2, ty2 = struct.unpack(">I4s", f.read(8))
+                    if ty2 == b"mvhd":
+                        ver = f.read(4)[0]
+                        if ver == 1:
+                            f.read(16); escala, dur = struct.unpack(">IQ", f.read(12))
+                        else:
+                            f.read(8); escala, dur = struct.unpack(">II", f.read(8))
+                        return round(dur / escala, 2) if escala else None
+                    if t2 < 8:
+                        return None
+                    q += t2
+                return None
+            pos += tam
+    return None
+
 def probe_dur(path):
+    try:
+        d = mp4_duracao(path)
+        if d and d > 0:
+            return d
+    except Exception:
+        pass
     try:
         r = subprocess.run([FFPROBE, "-v", "error", "-show_entries", "format=duration",
                             "-of", "csv=p=0", path], capture_output=True, text=True, timeout=20, **NOWIN)
@@ -57,7 +96,7 @@ def probe_dur(path):
 
 def motion_score(path):
     # média do YAVG do quadro-diferença (quanto muda entre frames) ~ quantidade de movimento
-    cmd = [FFMPEG, "-nostdin", "-v", "error", "-i", path,
+    cmd = [FFMPEG, "-nostdin", "-v", "error", "-threads", "1", "-i", path,
            "-vf", f"fps={SCORE_FPS},tblend=all_mode=difference,signalstats,metadata=print:key=lavfi.signalstats.YAVG:file=-",
            "-an", "-f", "null", "-"]
     try:
@@ -68,18 +107,48 @@ def motion_score(path):
     if not vals: return MOTION_THRESHOLD * 5   # não conseguiu medir -> trata como movimento (mantém)
     return round(sum(vals) / len(vals), 3)
 
+# índices ficam em memória entre as voltas (relê só se o arquivo mudou por fora, ex.: tela Disco)
+# e só são regravados quando mudam — antes eram lidos e regravados inteiros a cada 8 segundos.
+_IDX = {}      # (cam, day) -> (mtime, dict)
+_SIG = {}      # (cam, day) -> assinatura do que está gravado no arquivo
+
+def _sig(idx):
+    return (len(idx), hash(frozenset(idx)))
+
 def load_index(cam, day):
     p = os.path.join(REC, cam, f"{day}.json")
-    if os.path.exists(p):
-        try: return json.load(open(p))
-        except Exception: return {}
-    return {}
+    try:
+        mt = os.path.getmtime(p)
+    except OSError:
+        _IDX.pop((cam, day), None); _SIG.pop((cam, day), None)
+        return {}
+    c = _IDX.get((cam, day))
+    if c and c[0] == mt:
+        return c[1]
+    try:
+        with open(p) as f: d = json.load(f)
+    except Exception:
+        d = {}
+    _IDX[(cam, day)] = (mt, d); _SIG[(cam, day)] = _sig(d)
+    return d
 
 def save_index(cam, day, idx):
     p = os.path.join(REC, cam, f"{day}.json")
+    if _SIG.get((cam, day)) == _sig(idx) and os.path.exists(p):
+        return                                   # nada mudou: não regrava
     tmp = p + ".tmp"
-    json.dump(idx, open(tmp, "w"))
+    with open(tmp, "w") as f: json.dump(idx, f)
     os.replace(tmp, p)
+    try: _IDX[(cam, day)] = (os.path.getmtime(p), idx); _SIG[(cam, day)] = _sig(idx)
+    except OSError: pass
+
+_USO = {"t": 0, "bytes": 0}
+
+def uso_gravacoes(forcar=False):
+    """Tamanho de ui/rec — percorrer milhares de arquivos a cada 8s pesa no HD; recalcula a cada 60s."""
+    if forcar or time.time() - _USO["t"] > 60:
+        _USO["bytes"] = dir_size_bytes(REC); _USO["t"] = time.time()
+    return _USO["bytes"]
 
 def dir_size_bytes(path):
     total = 0
@@ -111,6 +180,8 @@ def _so_gravacao(path):
 
 def _apagar(path):
     os.remove(_so_gravacao(path))
+
+_MAN = {}
 
 def tick():
     os.makedirs(REC, exist_ok=True)
@@ -171,15 +242,16 @@ def tick():
         free_gb = du.free / 1e9
     except Exception:
         free_gb = 999
-    used_gb = dir_size_bytes(REC) / 1e9
+    used_gb = uso_gravacoes() / 1e9
     if used_gb > CAP_GB or free_gb < FREE_FLOOR_GB:
+        used_gb = uso_gravacoes(forcar=True) / 1e9
         segs = sorted(all_segments(), key=lambda s: s[3])  # mais antigo primeiro
         i = 0
         while i < len(segs) and (used_gb > CAP_GB * 0.95 or free_gb < FREE_FLOOR_GB + 1):
             cam, f, path, e = segs[i]; i += 1
             try:
                 sz = os.path.getsize(path); _apagar(path)
-                used_gb -= sz / 1e9; free_gb += sz / 1e9
+                used_gb -= sz / 1e9; free_gb += sz / 1e9; _USO["bytes"] -= sz
                 day = day_of(e)
                 if (cam, day) in indices: indices[(cam, day)].pop(f, None)
                 else:
@@ -212,9 +284,13 @@ def tick():
         "seg_seconds": SEG_SECONDS,
         "disk": {"used_gb": round(used_gb, 2), "cap_gb": CAP_GB, "free_gb": round(free_gb, 1)},
     }
-    tmp = os.path.join(REC, "manifest.json.tmp")
-    json.dump(manifest, open(tmp, "w"))
-    os.replace(tmp, os.path.join(REC, "manifest.json"))
+    # manifest: só regrava se mudou (ou a cada minuto, para o "atualizado")
+    sem_hora = json.dumps({k: v for k, v in manifest.items() if k != "updated"}, sort_keys=True)
+    if sem_hora != _MAN.get("s") or now - _MAN.get("t", 0) > 60:
+        tmp = os.path.join(REC, "manifest.json.tmp")
+        with open(tmp, "w") as f: json.dump(manifest, f)
+        os.replace(tmp, os.path.join(REC, "manifest.json"))
+        _MAN.update(s=sem_hora, t=now)
 
 def main():
     print(f"gravador: manutenção a cada {LOOP_SECONDS}s | rec={REC}")

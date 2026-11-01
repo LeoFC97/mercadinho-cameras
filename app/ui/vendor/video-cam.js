@@ -6,8 +6,9 @@ import { VideoRTC } from './video-rtc.js';
 
 class VideoCam extends VideoRTC {
   oninit() {
-    // painel de monitoramento: seguir ao vivo mesmo com a aba em segundo plano
-    this.visibilityCheck = false;       // precisa ser antes do super (que registra o listener)
+    // aba escondida / janela minimizada: desliga o vídeo (volta sozinho ao mostrar a aba).
+    // Assim um painel esquecido aberto não fica decodificando 4 câmeras à toa.
+    this.visibilityCheck = true;        // precisa ser antes do super (que registra o listener)
     super.oninit();
     this.video.controls = false;        // sem controles nativos; a UI cuida disso
     this.video.muted = true;

@@ -1,4 +1,4 @@
-import './vendor/video-cam.js';
+import './vendor/video-cam.js?v=2';
 import { ReviewView } from './review.js';
 import { DiskView } from './disk.js';
 import { VendasPanel } from './vendas.js';
@@ -140,7 +140,10 @@ function App() {
   const [cols, setCols] = useState('auto');          // 'auto' | 1 | 2 | 3
   const [view, setView] = useState('grid');          // 'grid' | 'focus'
   const [focusId, setFocusId] = useState(CAMERAS[0]?.id);
-  const [quality, setQuality] = useState('main');    // 'main' | 'sub'
+  // 'auto' (padrão): HD só na câmera grande do modo Foco; no mosaico, stream leve (bem menos trabalho
+  // para quem decodifica e menos internet). 'main' = HD em tudo, 'sub' = leve em tudo.
+  const [quality, setQualityRaw] = useState(() => { try { return localStorage.getItem('mercadinho_qualidade') || 'auto'; } catch { return 'auto'; } });
+  const setQuality = (q) => { setQualityRaw(q); try { localStorage.setItem('mercadinho_qualidade', q); } catch {} };
   const [mode, setMode] = useState('live');          // 'live' | 'review' | 'disk'
   const [toast, setToast] = useState('');
   const [online, setOnline] = useState({});
@@ -194,7 +197,8 @@ function App() {
 
   // tiles compartilhados (um por câmera) — recriados só quando muda qualidade
   const tileFor = (cam, opts = {}) => html`<${Tile}
-      key=${(opts.where||'g') + '_' + cam.id} cam=${cam} quality=${quality} name=${nameOf(cam)}
+      key=${(opts.where||'g') + '_' + cam.id} cam=${cam}
+      quality=${quality !== 'auto' ? quality : (opts.where === 'main' || CAMERAS.length === 1 ? 'main' : 'sub')} name=${nameOf(cam)}
       onRename=${rename} onFocus=${focusCam} onToast=${showToast}
       focused=${opts.focused} idx=${opts.idx} onStateReport=${setCamState(cam.id)} />`;
 
@@ -250,6 +254,7 @@ function App() {
           <button class=${view === 'focus' ? 'on' : ''} onClick=${() => setView('focus')}>${I.expand} Foco</button>
         </div>
         <div class="seg">
+          <button class=${quality === 'auto' ? 'on' : ''} title="HD só na câmera ampliada; mosaico leve (recomendado)" onClick=${() => setQuality('auto')}>Auto</button>
           <button class=${quality === 'main' ? 'on' : ''} onClick=${() => setQuality('main')}>HD</button>
           <button class=${quality === 'sub' ? 'on' : ''} onClick=${() => setQuality('sub')}>Econ</button>
         </div>
