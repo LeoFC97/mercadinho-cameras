@@ -61,6 +61,23 @@ function Login({ status, onOk }) {
     </form>`;
 }
 
+// "N removido(s) ▸": abre a lista do que a pessoa tirou do carrinho nessa transação
+function nRemovidos(tx, lista) { return Math.max(lista ? lista.length : 0, parseInt(tx && tx.removidos, 10) || 0); }
+function BotaoRemovidos({ id, tx, lista, aberto, onToggle }) {
+  const n = nRemovidos(tx, lista);
+  if (!n) return null;
+  return html`<button class=${'vd-rem-bt' + (aberto ? ' on' : '')} title="Ver quais produtos foram tirados do carrinho" onClick=${() => onToggle(id)}>
+    🗑 ${n} removido(s) do carrinho <span class="vd-rem-seta">${aberto ? '▾' : '▸'}</span></button>`;
+}
+function ListaRemovidos({ lista, onVerCameras }) {
+  if (!lista || !lista.length) return html`<div class="vd-rem vd-muted">O market4u ainda não listou quais foram (busque de novo em alguns minutos).</div>`;
+  return html`<div class="vd-rem">${lista.map((r, n) => html`<div class="vd-item vd-rem-item" key=${n}>
+      <span class="vd-q">${hora(r.datahora).slice(0, 8)}</span>
+      <span class="vd-p" title=${r.categoria + (r.codigo ? ' · cód. ' + r.codigo : '')}>${r.produto}</span>
+      ${r.t ? html`<button class="vd-ver" title="Ver nas câmeras o momento em que tirou" onClick=${() => onVerCameras(r.t)}>${IC.cam}</button>` : null}
+    </div>`)}</div>`;
+}
+
 export function VendasPanel({ onClose, onVerCameras, autoBuscar }) {
   const [status, setStatus] = useState(null);
   const [dia, setDia] = useState(isoDay(new Date()));
@@ -70,6 +87,8 @@ export function VendasPanel({ onClose, onVerCameras, autoBuscar }) {
   const [precisaLogin, setPrecisaLogin] = useState(false);
   const [busca, setBusca] = useState('');
   const [soIdent, setSoIdent] = useState(false);
+  const [abertos, setAbertos] = useState(() => new Set());   // transações com a lista de removidos aberta
+  const alternar = id => setAbertos(a => { const n = new Set(a); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const pedido = useRef(0);
 
   const carregarStatus = async () => {
@@ -122,6 +141,7 @@ export function VendasPanel({ onClose, onVerCameras, autoBuscar }) {
   }, [data, soIdent]);
   const nIdent = data && data.transacoes ? Object.values(data.transacoes).filter(t => t.identificado && /^compra efetuada/i.test(t.tipo)).length : 0;
 
+  const rem = (data && data.removidos) || {};
   const hoje = isoDay(new Date());
   const r = data?.resumo;
   return html`
@@ -155,6 +175,7 @@ export function VendasPanel({ onClose, onVerCameras, autoBuscar }) {
             </div>` : null}
           ${data && data.transacoes ? html`<label class="vd-ident"><input type="checkbox" checked=${soIdent} onChange=${e => setSoIdent(e.target.checked)} />
               Só clientes identificados (CPF na nota) — ${nIdent} de ${r ? r.transacoes : 0} compras</label>` : null}
+          ${data && data.removidos_erro ? html`<div class="vd-muted" style=${{ padding: '0 14px 8px', fontSize: '11.5px' }}>Lista de produtos removidos indisponível agora: ${data.removidos_erro}</div>` : null}
           ${data && data.transacoes_erro ? html`<div class="vd-muted" style=${{ padding: '0 14px 8px', fontSize: '11.5px' }}>Dados dos clientes indisponíveis agora: ${data.transacoes_erro}</div>` : null}
 
           ${err ? html`<div class="vd-err" style=${{ margin: '0 14px 10px' }}>${err}</div>` : null}
@@ -181,8 +202,9 @@ export function VendasPanel({ onClose, onVerCameras, autoBuscar }) {
                       ${g.tx.status_cliente ? html`<span>${g.tx.status_cliente}</span>` : null}
                       ${g.email ? html`<span title="e-mail do cadastro">✉ ${g.email}</span>` : null}
                       <span class="vd-muted">ID ${g.tx.cliente_id}</span>` : null}
-                    ${g.tx.removidos && g.tx.removidos !== '0' ? html`<span class="vd-alerta" title="Produtos tirados do carrinho antes de pagar">${g.tx.removidos} removido(s) do carrinho</span>` : null}
-                  </div>` : null}
+                    <${BotaoRemovidos} id=${g.k} tx=${g.tx} lista=${rem[g.k]} aberto=${abertos.has(g.k)} onToggle=${alternar} />
+                  </div>` : (rem[g.k] ? html`<div class="vd-cdados"><${BotaoRemovidos} id=${g.k} lista=${rem[g.k]} aberto=${abertos.has(g.k)} onToggle=${alternar} /></div>` : null)}
+                ${abertos.has(g.k) ? html`<${ListaRemovidos} lista=${rem[g.k]} onVerCameras=${onVerCameras} />` : null}
                 ${g.itens.map((i, n) => html`<div class="vd-item" key=${n}>
                   <span class="vd-q">${qtd(i.qtd)}×</span>
                   <span class="vd-p" title=${i.categoria + (i.barras ? ' · ' + i.barras : '')}>${i.produto}</span>
@@ -200,8 +222,9 @@ export function VendasPanel({ onClose, onVerCameras, autoBuscar }) {
                 </div>
                 <div class="vd-cdados">${t.pagamento ? html`<span>💳 ${t.pagamento}</span>` : null}
                   ${t.qtd_produtos ? html`<span>${t.qtd_produtos} produto(s)</span>` : null}
-                  ${t.removidos && t.removidos !== '0' ? html`<span>${t.removidos} removido(s)</span>` : null}
-                  ${t.total ? html`<span>${brl(t.total)}</span>` : null}</div>
+                  ${t.total ? html`<span>${brl(t.total)}</span>` : null}
+                  <${BotaoRemovidos} id=${t.id} tx=${t} lista=${rem[t.id]} aberto=${abertos.has(t.id)} onToggle=${alternar} /></div>
+                ${abertos.has(t.id) ? html`<${ListaRemovidos} lista=${rem[t.id]} onVerCameras=${onVerCameras} />` : null}
               </div>`)}` : null}
           </div>
 

@@ -176,6 +176,41 @@ def ler_transacoes(raw: bytes):
     return out
 
 
+def ler_removidos(raw: bytes):
+    """CSV do relatório 'Produtos removidos do carrinho' -> {id da transação: [produtos tirados do carrinho]}."""
+    for enc in ("utf-8-sig", "cp1252", "latin-1"):
+        try:
+            txt = raw.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    rows = list(csv.reader(io.StringIO(txt), delimiter=";"))
+    head = [_limpa(h) for h in rows[0]] if rows else []
+    if "Produto" not in head:
+        raise Market4uErro("o relatório de produtos removidos veio num formato inesperado")
+    col = {h: i for i, h in enumerate(head) if h}
+    g = lambda r, h: _limpa(r[col[h]]) if h in col and col[h] < len(r) else ""
+    out = {}
+    for r in rows[1:]:
+        if not any(x.strip() for x in r):
+            continue
+        tid = g(r, "ID transação")
+        prod = g(r, "Produto")
+        cod, _, nome = prod.partition(" - ")
+        if not nome:
+            cod, nome = "", prod
+        dh = g(r, "Data")
+        try:
+            ep = time.mktime(datetime.strptime(dh[:19], "%Y-%m-%d %H:%M:%S").timetuple())
+        except ValueError:
+            ep = None
+        out.setdefault(tid, []).append({"produto": nome.strip(), "codigo": cod.strip(), "categoria": g(r, "Categoria"),
+                                        "datahora": dh, "t": ep})
+    for v in out.values():
+        v.sort(key=lambda x: x["datahora"])
+    return out
+
+
 def resumo(itens):
     trans = {i["transacao"] for i in itens if i["transacao"]}
     return {
@@ -403,6 +438,11 @@ class Market4u:
             except Exception as e:
                 r["transacoes"] = self.transacoes_guardadas(dia)
                 r["transacoes_erro"] = str(e)
+            try:
+                r["removidos"] = self._removidos(dia)
+            except Exception as e:
+                r["removidos"] = self.removidos_guardados(dia)
+                r["removidos_erro"] = str(e)
             return r
 
     def _transacoes(self, dia: date):
@@ -423,6 +463,30 @@ class Market4u:
         os.replace(path + ".tmp", path)
         return tx
 
+    def _removidos(self, dia: date):
+        """Relatório 'Produtos removidos do carrinho' das transações do dia (quais itens a pessoa tirou)."""
+        d = dia.strftime("%d/%m/%Y")
+        post = {"type-post": "ajax", "full": "1", "lote": "1",
+                "DATA_JSON": json.dumps({"DATAHORA_DE": f"{d} 00:00", "DATAHORA_ATE": f"{d} 23:59"}),
+                "limparsessao": "0", "version-system": "app"}
+        q = urllib.parse.urlencode({"_action": "exportar", "POST": base64.b64encode(json.dumps(post).encode()).decode()})
+        st, hd, raw, _ = self._req("/relatorios/produtoabandonado/lst/?" + q, referer="/relatorios/produtos-abandonados")
+        if st != 200 or b"formLoginSistema" in raw:
+            raise Market4uErro(f"o market4u não devolveu os produtos removidos (HTTP {st})")
+        rem = ler_removidos(raw)
+        path = os.path.join(self.dir, "vendas", dia.strftime("%Y-%m-%d") + "_removidos.csv")
+        with open(path + ".tmp", "wb") as f:
+            f.write(raw)
+        os.replace(path + ".tmp", path)
+        return rem
+
+    def removidos_guardados(self, dia: date):
+        path = os.path.join(self.dir, "vendas", dia.strftime("%Y-%m-%d") + "_removidos.csv")
+        try:
+            return ler_removidos(open(path, "rb").read())
+        except Exception:
+            return {}
+
     def transacoes_guardadas(self, dia: date):
         path = os.path.join(self.dir, "vendas", dia.strftime("%Y-%m-%d") + "_transacoes.csv")
         try:
@@ -440,7 +504,7 @@ class Market4u:
             itens = [i for i in ler_planilha(open(path, "rb").read()) if i["datahora"].startswith(alvo)]
             return {"dia": alvo, "buscado_em": os.path.getmtime(path), "itens": itens,
                     "resumo": resumo(itens), "cache": True, "velha": velha,
-                    "transacoes": self.transacoes_guardadas(dia)}
+                    "transacoes": self.transacoes_guardadas(dia), "removidos": self.removidos_guardados(dia)}
         if os.path.isfile(path):
             mt = os.path.getmtime(path)
             fim_dia = time.mktime(dia.timetuple()) + 86400
