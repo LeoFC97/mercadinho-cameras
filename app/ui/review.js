@@ -83,7 +83,18 @@ export function ReviewView({ cameras, nameOf, go2rtc, onExit, jump, extraButtons
     return () => { alive = false; };
   }, []);
 
-  // carrega índices do dia selecionado
+  // carrega índices do dia selecionado (recarrega sem perder a posição: hoje a cada 1 min,
+  // e quando um trecho não carrega — o índice pode estar velho)
+  const [recarga, setRecarga] = useState(0);
+  const diaCarregado = useRef(null);
+  const [falhas, setFalhas] = useState({});           // camId -> motivo de não tocar
+  useEffect(() => {
+    if (!day) return;
+    const hoje = (() => { const d = new Date(); return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}`; })();
+    if (day !== hoje) return;
+    const id = setInterval(() => setRecarga(r => r + 1), 60000);
+    return () => clearInterval(id);
+  }, [day]);
   useEffect(() => {
     if (!day) return;
     let alive = true;
@@ -100,11 +111,24 @@ export function ReviewView({ cameras, nameOf, go2rtc, onExit, jump, extraButtons
       let s = Infinity, e = -Infinity;
       for (const c of cameras) for (const seg of (idx[c.id] || [])) { s = Math.min(s, seg.t); e = Math.max(e, seg.t + seg.d); }
       if (s === Infinity) { setRange(null); return; }
-      setRange({ start: s, end: e, day });
-      tRef.current = s; setDispT(s);
+      setRange(r => (r && r.day === day && r.start === s && r.end === e) ? r : { start: s, end: e, day });
+      if (diaCarregado.current !== day) { diaCarregado.current = day; tRef.current = s; setDispT(s); setFalhas({}); }
     })();
     return () => { alive = false; };
-  }, [day, cameras]);
+  }, [day, cameras, recarga]);
+
+  // um trecho que o índice diz existir não tocou: descobre o motivo e mostra (em vez de tela preta)
+  const falhou = async (camId, url) => {
+    let motivo = 'não foi possível tocar este trecho';
+    try {
+      const r = await fetch(url, { method: 'HEAD', cache: 'no-store' });
+      motivo = r.status === 404 ? 'trecho apagado (o índice estava desatualizado)'
+        : 'arquivo com problema ou formato que este navegador não toca';
+    } catch { motivo = 'sem conexão com o notebook'; }
+    setFalhas(f => ({ ...f, [camId]: motivo }));
+    setRecarga(r => r + 1);
+  };
+  const ok = (camId) => setFalhas(f => (f[camId] ? (({ [camId]: _, ...resto }) => resto)(f) : f));
 
   // garante o segmento certo em cada <video> para o tempo t.
   // isMaster: a câmera que dita o relógio nunca é "corrigida" contra ele (senão relógio e vídeo
@@ -130,7 +154,7 @@ export function ReviewView({ cameras, nameOf, go2rtc, onExit, jump, extraButtons
       const off = Math.max(0, Math.min(dur - 0.05, tRef.current - seg.t));
       try { if (Math.abs(sp.currentTime - off) > 0.25) sp.currentTime = off; sp.playbackRate = Math.min(speedRef.current, 4); } catch {}
       if (playingRef.current) sp.play().catch(() => {});
-      sp.style.visibility = 'visible'; v.style.visibility = 'hidden';
+      sp.style.visibility = 'visible'; v.style.visibility = 'hidden'; ok(camId);
       v.pause();
       lastFix.current[camId] = performance.now();
       return true;
@@ -149,6 +173,13 @@ export function ReviewView({ cameras, nameOf, go2rtc, onExit, jump, extraButtons
         if (playingRef.current) v.play().catch(() => {});
       };
       v.addEventListener('loadedmetadata', onmeta);
+      const url = `/rec/${camId}/${want}`;
+      const onerr = () => { v.removeEventListener('error', onerr); if (cur.current[camId] === want) falhou(camId, url); };
+      const ondata = () => { v.removeEventListener('loadeddata', ondata); ok(camId); };
+      v.addEventListener('error', onerr);
+      v.addEventListener('loadeddata', ondata);
+      // carregando há muito tempo sem nenhum quadro: avisa também
+      setTimeout(() => { if (cur.current[camId] === want && v.readyState < 2 && vids.current[camId] === v) falhou(camId, url); }, 12000);
       lastFix.current[camId] = performance.now();
       return true;
     }
@@ -371,7 +402,8 @@ export function ReviewView({ cameras, nameOf, go2rtc, onExit, jump, extraButtons
                                    if (el && el.style.visibility === '') el.style.visibility = k === (ativo.current[c.id] || 0) ? 'visible' : 'hidden'; }}
                      style=${{position:'absolute',inset:0,width:'100%',height:'100%',objectFit:'cover',background:'#000'}}></video>`)}
                   ${segAt(index[c.id] || [], dispT) < 0
-                    ? html`<div class="offbox"><span>sem gravação</span></div>` : null}
+                    ? html`<div class="offbox"><span>sem gravação</span></div>`
+                    : falhas[c.id] ? html`<div class="offbox"><span>⚠ ${falhas[c.id]}</span></div>` : null}
                   <div class="sheen"></div>
                   <div class="cap"><span class="name">${nameOf(c)}</span><span class="ts">${c.ip || ''}</span></div>
                 </div>`)}

@@ -19,6 +19,9 @@ CAP_GB            = float(os.environ.get("CAP_GB", "18.0"))     # tamanho máxim
 FREE_FLOOR_GB     = float(os.environ.get("FREE_FLOOR_GB", "12.0"))     # nunca deixar o disco abaixo disso (apara os mais antigos)
 RETENTION_HOURS   = float(os.environ.get("RETENTION_HOURS", "72"))       # descarta eventos mais antigos que isso
 GRACE_HOURS       = float(os.environ.get("GRACE_HOURS", "2"))        # NUNCA poda por falta de movimento nas últimas N horas (segurança)
+PROTEGE_ANTES_S   = float(os.environ.get("PROTEGE_ANTES_S", "420"))   # perto de venda/ocorrência: guarda 7 min antes...
+PROTEGE_DEPOIS_S  = float(os.environ.get("PROTEGE_DEPOIS_S", "120"))  # ...e 2 min depois, mesmo sem movimento detectado
+PAINEL_PORTA      = os.environ.get("PAINEL_PORTA", "8099")
 LOOP_SECONDS      = float(os.environ.get("LOOP_SECONDS", "8"))
 
 NOWIN = {"creationflags": 0x08000000} if os.name == "nt" else {}   # sem janela de console no Windows
@@ -182,6 +185,42 @@ def _apagar(path):
     os.remove(_so_gravacao(path))
 
 _MAN = {}
+_PROT = {}     # dia -> (quando buscou, [horários protegidos], vendas_ok)
+
+def horarios_protegidos(day):
+    """Horários em que NÃO se apaga gravação por falta de movimento: vendas (market4u, via painel),
+    ocorrências marcadas e movimentações detectadas nas prateleiras."""
+    c = _PROT.get(day)
+    if c and time.time() - c[0] < 300:
+        return c[1], c[2]
+    hs, ok = [], False
+    try:
+        import urllib.request
+        with urllib.request.urlopen(f"http://127.0.0.1:{PAINEL_PORTA}/api/vendas/horarios?dia={day}", timeout=60) as r:
+            hs += json.load(r).get("horarios", [])
+            ok = True
+    except Exception:
+        pass
+    dados = os.path.join(HERE, "dados")
+    try:
+        for o in json.load(open(os.path.join(dados, "ocorrencias.json"), encoding="utf-8")):
+            if day_of(o["t"]) == day: hs.append(o["t"])
+    except Exception:
+        pass
+    try:
+        for e in json.load(open(os.path.join(dados, "prateleiras", "eventos", f"{day}.json"), encoding="utf-8")):
+            hs.append(e["inicio"])
+    except Exception:
+        pass
+    hs = sorted(hs)
+    _PROT[day] = (time.time(), hs, ok)
+    return hs, ok
+
+def _protegido(hs, t0, t1):
+    """o trecho [t0,t1] cai na janela de algum horário protegido?"""
+    import bisect
+    i = bisect.bisect_left(hs, t0 - PROTEGE_DEPOIS_S)
+    return i < len(hs) and hs[i] <= t1 + PROTEGE_ANTES_S
 
 def tick():
     os.makedirs(REC, exist_ok=True)
@@ -225,10 +264,19 @@ def tick():
             if meta["m"] >= MOTION_THRESHOLD:
                 for j in range(max(0, i - KEEP_MARGIN_SEGS), min(len(items), i + KEEP_MARGIN_SEGS + 1)):
                     keep[j] = True
+        hs = None
         for i, (f, meta) in enumerate(items):
             age = now - (meta["t"] + meta["d"])
-            # retenção e poda de trechos sem movimento (depois de uma folga de 90s p/ dar tempo da margem)
-            if age > RETENTION_HOURS * 3600 or (not keep[i] and age > GRACE_HOURS * 3600):
+            if age > RETENTION_HOURS * 3600:
+                to_delete.append((cam, day, f)); continue
+            if keep[i] or age <= GRACE_HOURS * 3600:
+                continue
+            # sem movimento e passou da folga: só apaga se não estiver perto de venda/ocorrência/prateleira
+            if hs is None:
+                hs, vendas_ok = horarios_protegidos(day)
+            if not vendas_ok and age < 12 * 3600:
+                break                         # sem saber das vendas: espera (até 12h) antes de podar
+            if not _protegido(hs, meta["t"], meta["t"] + meta["d"]):
                 to_delete.append((cam, day, f))
 
     for cam, day, f in to_delete:

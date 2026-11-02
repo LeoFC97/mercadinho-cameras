@@ -483,6 +483,11 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json(200, m4u().status())
             if clean == "/api/vendas":
                 return self._json(200, m4u().vendas(_dia_param(self.path)))
+            if clean == "/api/vendas/horarios":
+                # usado pelo gravador: horários de venda do dia (planilha guardada vale por 10 min)
+                r = m4u().vendas_cache(_dia_param(self.path), max_idade=600, permitir_velho=True)
+                return self._json(200, {"dia": r["dia"], "horarios": sorted({i["t"] for i in r["itens"] if i.get("t")}),
+                                        "velha": bool(r.get("velha"))})
             if clean == "/api/vendas/planilha":
                 dia = _dia_param(self.path)
                 p = m4u().planilha(dia)
