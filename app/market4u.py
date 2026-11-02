@@ -172,6 +172,8 @@ def ler_transacoes(raw: bytes):
             "qtd_produtos": g(r, "Qtde produtos"), "removidos": g(r, "Qtde produtos removidos"),
             "total": round(_num(g(r, "Total")), 2), "desconto": round(_num(g(r, "Desconto")), 2),
             "estorno": round(_num(g(r, "Total Estorno")), 2), "nfce": g(r, "NFC-e"),
+            "voucher": round(_num(g(r, "Voucher")), 2), "cashback": round(_num(g(r, "Cashback")), 2),
+            "carteira": round(_num(g(r, "Saldo Carteira")), 2),
         }
     return out
 

@@ -261,18 +261,252 @@ def calcular(m4u, de, ate):
             if t and not t["identificado"]:
                 continue
             perfil_tx[i["transacao"]] = (i.get("sexo") or "", _faixa(i.get("idade")))
-    sexo, faixa = defaultdict(int), defaultdict(int)
-    for s, f in perfil_tx.values():
+    sexo, faixa = defaultdict(lambda: [0, 0.0]), defaultdict(lambda: [0, 0.0])
+    for tid, (s, f) in perfil_tx.items():
+        v = fat_tx.get(tid, 0)
         if s and s.lower() not in ("0", "não informado", "nao informado"):
-            sexo[s] += 1
+            sexo[s][0] += 1; sexo[s][1] += v
         if f:
-            faixa[f] += 1
+            faixa[f][0] += 1; faixa[f][1] += v
     ordem = ["até 17", "18–24", "25–34", "35–44", "45–54", "55–64", "65+"]
-    out["perfil"] = {"sexo": [{"nome": k, "compras": v} for k, v in sorted(sexo.items(), key=lambda x: -x[1])],
-                     "faixa": [{"nome": k, "compras": faixa[k]} for k in ordem if faixa.get(k)]}
+    out["perfil"] = {"sexo": [{"nome": k, "compras": v[0], "ticket": round(v[1] / v[0], 2) if v[0] else None}
+                              for k, v in sorted(sexo.items(), key=lambda x: -x[1][0])],
+                     "faixa": [{"nome": k, "compras": faixa[k][0], "ticket": round(faixa[k][1] / faixa[k][0], 2) if faixa[k][0] else None}
+                               for k in ordem if k in faixa]}
 
+    extras(out, itens, trans, rem, p_itens, p_trans, de, ate, pde, pate, fat_tx, prods, m4u)
     out["insights"] = insights(out)
     return out
+
+
+def _bucket(v, limites, nomes):
+    for lim, nome in zip(limites, nomes):
+        if v <= lim:
+            return nome
+    return nomes[-1]
+
+
+def extras(out, itens, trans, rem, p_itens, p_trans, de, ate, pde, pate, fat_tx, prods, m4u):
+    """Análises a mais do Dashboard completo."""
+    hoje = date.today()
+    # --- acumulado do período x anterior ---
+    def acum(pd):
+        a, r = 0.0, []
+        for d in pd or []:
+            a += d["faturamento"]
+            r.append(round(a, 2))
+        return r
+    out["acumulado"] = acum(out["por_dia"])
+    out["acumulado_anterior"] = acum(out["por_dia_anterior"]) if out["por_dia_anterior"] else None
+
+    # --- semanas e meses ---
+    def agrupa_tempo(chave):
+        g = defaultdict(lambda: {"fat": 0.0, "custo": 0.0, "tx": set(), "dias": set()})
+        for i in itens:
+            d = datetime.strptime(i["datahora"][:10], "%Y-%m-%d").date()
+            x = g[chave(d)]
+            x["fat"] += i["valor"]; x["custo"] += i["custo"]; x["dias"].add(d)
+            if i["transacao"]:
+                x["tx"].add(i["transacao"])
+        return [{"periodo": k, "faturamento": round(v["fat"], 2), "margem": round(v["fat"] - v["custo"], 2),
+                 "compras": len(v["tx"]), "dias": len(v["dias"]),
+                 "ticket": round(v["fat"] / len(v["tx"]), 2) if v["tx"] else None,
+                 "media_dia": round(v["fat"] / len(v["dias"]), 2) if v["dias"] else None}
+                for k, v in sorted(g.items())]
+    out["por_semana"] = agrupa_tempo(lambda d: (d - timedelta(days=d.weekday())).isoformat())
+    out["por_mes"] = agrupa_tempo(lambda d: d.strftime("%Y-%m"))
+
+    # --- projeção do mês corrente (usa as planilhas guardadas do mês e do mês anterior) ---
+    ini_mes = hoje.replace(day=1)
+    fim_ant = ini_mes - timedelta(days=1)
+    ini_ant = fim_ant.replace(day=1)
+    import calendar
+    dias_mes = calendar.monthrange(hoje.year, hoje.month)[1]
+    def soma(a, b):
+        tot, ok = 0.0, 0
+        for d in _dias(a, b):
+            it = _ler(m4u._arq(d), market4u.ler_planilha)
+            if it is None:
+                continue
+            ok += 1
+            tot += sum(i["valor"] for i in it if i["datahora"].startswith(d.isoformat()))
+        return tot, ok
+    mtd, ok_mtd = soma(ini_mes, hoje)
+    ant, ok_ant = soma(ini_ant, fim_ant)
+    agora = datetime.now()
+    decorrido = (hoje.day - 1) + (agora.hour * 60 + agora.minute) / 1440
+    ant_ate_hoje, _ = soma(ini_ant, min(fim_ant, ini_ant + timedelta(days=hoje.day - 1)))
+    out["projecao_mes"] = {
+        "mes": hoje.strftime("%Y-%m"), "ate_agora": round(mtd, 2), "dias_mes": dias_mes, "dia": hoje.day,
+        "completo": ok_mtd == hoje.day,
+        "projecao": round(mtd / decorrido * dias_mes, 2) if decorrido >= 1 else None,
+        "mes_anterior": round(ant, 2) if ok_ant == fim_ant.day else None,
+        "mes_anterior_mesmo_dia": round(ant_ate_hoje, 2) if ok_ant else None,
+    }
+
+    # --- tamanho das compras ---
+    itens_tx = defaultdict(float)
+    for i in itens:
+        if i["transacao"]:
+            itens_tx[i["transacao"]] += i["qtd"]
+    tick = [v for k, v in fat_tx.items() if k]
+    nomes_t = ["até R$5", "R$5–10", "R$10–20", "R$20–30", "R$30–50", "R$50–100", "R$100+"]
+    dist = defaultdict(lambda: {"n": 0, "fat": 0.0})
+    for v in tick:
+        b = _bucket(v, [5, 10, 20, 30, 50, 100, 1e12], nomes_t)
+        dist[b]["n"] += 1; dist[b]["fat"] += v
+    out["ticket_dist"] = [{"nome": n, "compras": dist[n]["n"], "faturamento": round(dist[n]["fat"], 2)} for n in nomes_t]
+    nomes_i = ["1 item", "2 itens", "3 itens", "4 itens", "5–7", "8+"]
+    di = defaultdict(int)
+    for v in itens_tx.values():
+        di[_bucket(v, [1, 2, 3, 4, 7, 1e9], nomes_i)] += 1
+    out["itens_dist"] = [{"nome": n, "compras": di[n]} for n in nomes_i]
+
+    # --- cesta: produtos comprados juntos ---
+    por_tx = defaultdict(set)
+    nome_de = {}
+    for i in itens:
+        if i["transacao"]:
+            k = i["codigo"] or i["produto"]
+            por_tx[i["transacao"]].add(k)
+            nome_de[k] = i["produto"]
+    n_tx = len(por_tx) or 1
+    cont = defaultdict(int)
+    par = defaultdict(int)
+    for ks in por_tx.values():
+        for k in ks:
+            cont[k] += 1
+        ks = sorted(ks)
+        if len(ks) > 12:
+            continue
+        for a_ in range(len(ks)):
+            for b_ in range(a_ + 1, len(ks)):
+                par[(ks[a_], ks[b_])] += 1
+    cesta = []
+    for (a_, b_), c in par.items():
+        if c < 3:
+            continue
+        lift = c / n_tx / ((cont[a_] / n_tx) * (cont[b_] / n_tx))
+        cesta.append({"a": nome_de[a_], "b": nome_de[b_], "juntos": c,
+                      "pct_a": round(c / cont[a_] * 100), "pct_b": round(c / cont[b_] * 100), "lift": round(lift, 1)})
+    cesta.sort(key=lambda x: (-x["juntos"], -x["lift"]))
+    out["cesta"] = cesta[:20]
+    out["compras_multiplas_pct"] = round(sum(1 for ks in por_tx.values() if len(ks) > 1) / n_tx * 100, 1) if por_tx else None
+
+    # --- produtos: altas, quedas, novos, preços ---
+    com_ant = [p for p in prods if p["anterior"] > 0]
+    out["altas"] = sorted([dict(p, delta=round(p["faturamento"] - p["anterior"], 2)) for p in com_ant if p["faturamento"] > p["anterior"]],
+                          key=lambda x: -x["delta"])[:10]
+    quedas = []
+    for p in com_ant:
+        if p["faturamento"] < p["anterior"]:
+            quedas.append(dict(p, delta=round(p["faturamento"] - p["anterior"], 2)))
+    for s_ in out["sumiram"]:
+        quedas.append({"codigo": s_["codigo"], "nome": s_["nome"], "faturamento": 0, "anterior": s_["anterior"], "delta": -s_["anterior"], "qtd": 0})
+    out["quedas"] = sorted(quedas, key=lambda x: x["delta"])[:10]
+    out["novos"] = [p for p in prods if not p["anterior"]][:15]
+    pq = defaultdict(lambda: [0.0, 0.0])
+    for i in p_itens:
+        x = pq[i["codigo"] or i["produto"]]
+        x[0] += i["valor"]; x[1] += i["qtd"]
+    precos = []
+    for p in prods:
+        a_ = pq.get(p["codigo"])
+        if a_ and a_[1] >= 1 and p["qtd"] >= 1 and p["preco_medio"]:
+            pa = a_[0] / a_[1]
+            v = (p["preco_medio"] - pa) / pa * 100
+            if abs(v) >= 3:
+                precos.append({"nome": p["nome"], "antes": round(pa, 2), "agora": p["preco_medio"], "var": round(v, 1),
+                               "qtd": p["qtd"], "qtd_antes": round(a_[1], 1)})
+    out["precos"] = sorted(precos, key=lambda x: -abs(x["var"]))[:15]
+
+    # --- clientes: recência, frequência, em risco, identificado x não ---
+    todas = list(p_trans.values()) + list(trans.values())
+    hist = defaultdict(lambda: {"nome": "", "compras": 0, "gasto": 0.0, "ultima": "", "primeira": "9999"})
+    fat_tx_ant = defaultdict(float)
+    for i in p_itens:
+        fat_tx_ant[i["transacao"]] += i["valor"]
+    for t in todas:
+        if not (t["identificado"] and t["tipo"].lower().startswith("compra efetuada")):
+            continue
+        h = hist[t["cliente_id"]]
+        h["nome"] = t["nome"]; h["compras"] += 1
+        h["gasto"] += fat_tx.get(t["id"]) or fat_tx_ant.get(t["id"]) or t["total"]
+        h["ultima"] = max(h["ultima"], t["datahora"]); h["primeira"] = min(h["primeira"], t["datahora"])
+    ref = datetime.combine(min(ate, hoje), datetime.max.time())
+    rec = defaultdict(int)
+    nomes_r = ["até 7 dias", "8–14 dias", "15–30 dias", "mais de 30 dias"]
+    risco = []
+    for cid, h in hist.items():
+        try:
+            dias = (ref - datetime.strptime(h["ultima"][:19], "%Y-%m-%d %H:%M:%S")).days
+        except ValueError:
+            continue
+        rec[_bucket(dias, [7, 14, 30, 1e9], nomes_r)] += 1
+        if h["compras"] >= 3 and dias >= 10:
+            risco.append({"id": cid, "nome": h["nome"], "compras": h["compras"], "gasto": round(h["gasto"], 2),
+                          "ultima": h["ultima"], "dias": dias})
+    out["clientes_recencia"] = [{"nome": n, "clientes": rec[n]} for n in nomes_r]
+    out["clientes_risco"] = sorted(risco, key=lambda x: -x["gasto"])[:15]
+    freq = defaultdict(int)
+    nomes_f = ["1 compra", "2–3", "4–7", "8–15", "16+"]
+    cli_per = defaultdict(int)
+    for t in trans.values():
+        if t["identificado"] and t["tipo"].lower().startswith("compra efetuada"):
+            cli_per[t["cliente_id"]] += 1
+    for v in cli_per.values():
+        freq[_bucket(v, [1, 3, 7, 15, 1e9], nomes_f)] += 1
+    out["clientes_frequencia"] = [{"nome": n, "clientes": freq[n]} for n in nomes_f]
+    idv = {"ident": [0, 0.0, 0.0], "nao": [0, 0.0, 0.0]}
+    for tid, t in trans.items():
+        if not t["tipo"].lower().startswith("compra efetuada") or tid not in fat_tx:
+            continue
+        x = idv["ident" if t["identificado"] else "nao"]
+        x[0] += 1; x[1] += fat_tx[tid]; x[2] += itens_tx.get(tid, 0)
+    out["ident_vs_nao"] = {k: {"compras": v[0], "faturamento": round(v[1], 2),
+                               "ticket": round(v[1] / v[0], 2) if v[0] else None,
+                               "itens": round(v[2] / v[0], 2) if v[0] else None} for k, v in idv.items()}
+
+    # --- operação: desistências por dia, removidos por categoria e por hora, financeiro ---
+    des = defaultdict(int)
+    for t in trans.values():
+        if t["tipo"].lower().startswith("compra removida"):
+            des[t["datahora"][:10]] += 1
+    out["desistencias_dia"] = [{"dia": d["dia"], "n": des.get(d["dia"], 0), "compras": d["compras"]} for d in out["por_dia"]]
+    rc, rh = defaultdict(int), [0] * 24
+    for lst in rem.values():
+        for r in lst:
+            rc[r["categoria"] or "—"] += 1
+            if r.get("t"):
+                rh[datetime.fromtimestamp(r["t"]).hour] += 1
+    cat_qtd = {c["nome"]: c["qtd"] for c in out["categorias"]}
+    out["removidos_categoria"] = sorted([{"nome": k, "removidos": v, "vendidos": cat_qtd.get(k, 0)} for k, v in rc.items()],
+                                        key=lambda x: -x["removidos"])[:10]
+    out["removidos_hora"] = rh
+    fin = {"desconto": 0.0, "estorno": 0.0, "voucher": 0.0, "cashback": 0.0, "n_desconto": 0, "n_estorno": 0, "n_voucher": 0, "n_cashback": 0}
+    status = defaultdict(int)
+    for t in trans.values():
+        status[t["tipo"] or "—"] += 1
+        for c in ("desconto", "estorno", "voucher", "cashback"):
+            v = t.get(c) or 0
+            if v:
+                fin[c] += v; fin["n_" + c] += 1
+    out["financeiro"] = {k: (round(v, 2) if isinstance(v, float) else v) for k, v in fin.items()}
+    out["tipos_transacao"] = sorted([{"nome": k, "n": v} for k, v in status.items()], key=lambda x: -x["n"])
+
+    # --- destaques ---
+    pd_ = [d for d in out["por_dia"] if d["compras"]]
+    if pd_:
+        out["melhor_dia"] = max(pd_, key=lambda d: d["faturamento"])
+        out["pior_dia"] = min([d for d in pd_ if d["dia"] != hoje.isoformat()] or pd_, key=lambda d: d["faturamento"])
+    out["skus"] = len(prods)
+    # ticket médio por hora (média do período)
+    hh = defaultdict(lambda: [0.0, set()])
+    for i in itens:
+        if i.get("t") and i["transacao"]:
+            h = datetime.fromtimestamp(i["t"]).hour
+            hh[h][0] += i["valor"]; hh[h][1].add(i["transacao"])
+    out["ticket_hora"] = [round(hh[h][0] / len(hh[h][1]), 2) if hh[h][1] else None for h in range(24)]
 
 
 def _brl(v):
@@ -339,6 +573,24 @@ def insights(o):
     if o["sumiram"]:
         s = o["sumiram"][:3]
         ins.append({"tipo": "info", "txt": "Venderam no período anterior e nada agora (falta na prateleira?): " + ", ".join(x["nome"] for x in s) + "."})
+    pm = o.get("projecao_mes") or {}
+    if pm.get("projecao") and pm.get("mes_anterior"):
+        v = (pm["projecao"] - pm["mes_anterior"]) / pm["mes_anterior"] * 100
+        ins.append({"tipo": "bom" if v >= 0 else "ruim",
+                    "txt": f"No ritmo atual o mês fecha em {_brl(pm['projecao'])} ({'+' if v >= 0 else ''}{v:.0f}% sobre o mês passado, {_brl(pm['mes_anterior'])})."})
+    if o.get("cesta"):
+        c = o["cesta"][0]
+        ins.append({"tipo": "info", "txt": f"Combinação mais comum: {c['a']} + {c['b']} ({c['juntos']} compras juntos). Vale deixar perto na prateleira."})
+    if o.get("precos"):
+        p = o["precos"][0]
+        ins.append({"tipo": "info", "txt": f"Preço de {p['nome']} mudou {p['var']:+.0f}% ({_brl(p['antes'])} → {_brl(p['agora'])}); vendeu {p['qtd_antes']:.0f} → {p['qtd']:.0f} un."})
+    iv = o.get("ident_vs_nao") or {}
+    if iv.get("ident", {}).get("ticket") and iv.get("nao", {}).get("ticket") and iv["ident"]["compras"] >= 10:
+        r = (iv["ident"]["ticket"] - iv["nao"]["ticket"]) / iv["nao"]["ticket"] * 100
+        if abs(r) >= 10:
+            ins.append({"tipo": "info", "txt": f"Quem põe CPF na nota gasta {abs(r):.0f}% {'mais' if r > 0 else 'menos'} por compra ({_brl(iv['ident']['ticket'])} x {_brl(iv['nao']['ticket'])})."})
+    if o.get("clientes_risco"):
+        ins.append({"tipo": "ruim", "txt": f"{len(o['clientes_risco'])} cliente(s) frequentes não compram há 10+ dias (ex.: {o['clientes_risco'][0]['nome']}, {o['clientes_risco'][0]['dias']} dias)."})
     return ins
 
 

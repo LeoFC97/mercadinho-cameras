@@ -517,7 +517,9 @@ class Handler(SimpleHTTPRequestHandler):
             pde = de - timedelta(days=n)
             aviso, precisa = None, False
             try:
-                m4u().garantir_vendas(pde, ate)            # planilhas de vendas: rápido (uma exportação)
+                hoje_ = date.today()
+                ini_ant = (hoje_.replace(day=1) - timedelta(days=1)).replace(day=1)   # projeção do mês
+                m4u().garantir_vendas(min(pde, ini_ant), max(ate, hoje_))   # planilhas de vendas: rápido (uma exportação)
             except market4u.PrecisaLogin as e:
                 precisa, aviso = True, str(e)
             except Exception as e:
