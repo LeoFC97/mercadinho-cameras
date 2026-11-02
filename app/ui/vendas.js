@@ -69,6 +69,7 @@ export function VendasPanel({ onClose, onVerCameras, autoBuscar }) {
   const [err, setErr] = useState('');
   const [precisaLogin, setPrecisaLogin] = useState(false);
   const [busca, setBusca] = useState('');
+  const [soIdent, setSoIdent] = useState(false);
   const pedido = useRef(0);
 
   const carregarStatus = async () => {
@@ -105,10 +106,21 @@ export function VendasPanel({ onClose, onVerCameras, autoBuscar }) {
       if (!map.has(k)) map.set(k, { k, t: it.t, datahora: it.datahora, via: it.via, cliente: it.cliente, itens: [], total: 0 });
       const g = map.get(k); g.itens.push(it); g.total += it.valor;
     }
-    let out = [...map.values()];
-    if (q) out = out.filter(g => g.itens.some(i => (i.produto + ' ' + i.categoria + ' ' + i.barras).toLowerCase().includes(q)));
+    const tx = data.transacoes || {};
+    let out = [...map.values()].map(g => ({ ...g, tx: tx[g.k] || null, email: (g.itens.find(i => i.email) || {}).email || '' }));
+    if (soIdent) out = out.filter(g => g.tx && g.tx.identificado);
+    if (q) out = out.filter(g => g.itens.some(i => (i.produto + ' ' + i.categoria + ' ' + i.barras).toLowerCase().includes(q))
+                             || (g.tx && (g.tx.nome + ' ' + g.tx.cliente_id).toLowerCase().includes(q)));
     return out;
-  }, [data, busca]);
+  }, [data, busca, soIdent]);
+  // transações sem venda: compra removida, carrinho, cobrança pendente...
+  const outras = useMemo(() => {
+    if (!data || !data.transacoes) return [];
+    const vendidas = new Set(data.itens.map(i => i.transacao));
+    return Object.values(data.transacoes).filter(t => !vendidas.has(t.id) && !/^(compra efetuada|pagamento)/i.test(t.tipo))
+      .filter(t => !soIdent || t.identificado).sort((a, b) => (b.t || 0) - (a.t || 0));
+  }, [data, soIdent]);
+  const nIdent = data && data.transacoes ? Object.values(data.transacoes).filter(t => t.identificado && /^compra efetuada/i.test(t.tipo)).length : 0;
 
   const hoje = isoDay(new Date());
   const r = data?.resumo;
@@ -141,10 +153,13 @@ export function VendasPanel({ onClose, onVerCameras, autoBuscar }) {
               <div><small>Itens</small><b>${qtd(r.itens)}</b></div>
               <div><small>Última</small><b>${r.ultima ? hora(r.ultima).slice(0, 5) : '—'}</b></div>
             </div>` : null}
+          ${data && data.transacoes ? html`<label class="vd-ident"><input type="checkbox" checked=${soIdent} onChange=${e => setSoIdent(e.target.checked)} />
+              Só clientes identificados (CPF na nota) — ${nIdent} de ${r ? r.transacoes : 0} compras</label>` : null}
+          ${data && data.transacoes_erro ? html`<div class="vd-muted" style=${{ padding: '0 14px 8px', fontSize: '11.5px' }}>Dados dos clientes indisponíveis agora: ${data.transacoes_erro}</div>` : null}
 
           ${err ? html`<div class="vd-err" style=${{ margin: '0 14px 10px' }}>${err}</div>` : null}
 
-          ${data ? html`<div class="vd-search"><input placeholder="Filtrar produto, categoria ou código…" value=${busca} onInput=${e => setBusca(e.target.value)} /></div>` : null}
+          ${data ? html`<div class="vd-search"><input placeholder="Filtrar produto, código ou cliente…" value=${busca} onInput=${e => setBusca(e.target.value)} /></div>` : null}
 
           <div class="vd-list">
             ${!data && busy ? html`<div class="vd-empty"><div class="spin"></div><span>Baixando a planilha do market4u…</span></div>` : null}
@@ -154,16 +169,40 @@ export function VendasPanel({ onClose, onVerCameras, autoBuscar }) {
                 <div class="vd-txh">
                   <span class="vd-time">${hora(g.datahora)}</span>
                   <span class="vd-via">${g.via || ''}</span>
-                  ${g.cliente && !/sem cpf/i.test(g.cliente) ? html`<span class="vd-cli" title=${g.cliente}>${g.cliente}</span>` : html`<span class="vd-cli"></span>`}
+                  ${g.tx && g.tx.identificado ? html`<span class="vd-cli vd-cli-id" title=${'Cliente ' + g.tx.cliente_id}>👤 ${g.tx.nome}</span>`
+                    : html`<span class="vd-cli" title="Sem CPF na nota: a maquininha usa um cliente genérico">${g.tx ? 'sem CPF' : ''}</span>`}
                   <b class="vd-val">${brl(g.total)}</b>
                   ${g.t ? html`<button class="vd-ver" title="Ver nas câmeras (Revisão, 20s antes da venda)" onClick=${() => onVerCameras(g.t)}>${IC.cam}<span>ver</span></button>` : null}
                 </div>
+                ${g.tx ? html`<div class="vd-cdados">
+                    ${g.tx.pagamento ? html`<span>💳 ${g.tx.pagamento.replace(/^POS\s*/i, '')}</span>` : null}
+                    ${g.tx.identificado ? html`
+                      <span title="Quantas compras esse cliente já fez">🛒 ${g.tx.compras_cliente} compra(s)</span>
+                      ${g.tx.status_cliente ? html`<span>${g.tx.status_cliente}</span>` : null}
+                      ${g.email ? html`<span title="e-mail do cadastro">✉ ${g.email}</span>` : null}
+                      <span class="vd-muted">ID ${g.tx.cliente_id}</span>` : null}
+                    ${g.tx.removidos && g.tx.removidos !== '0' ? html`<span class="vd-alerta" title="Produtos tirados do carrinho antes de pagar">${g.tx.removidos} removido(s) do carrinho</span>` : null}
+                  </div>` : null}
                 ${g.itens.map((i, n) => html`<div class="vd-item" key=${n}>
                   <span class="vd-q">${qtd(i.qtd)}×</span>
                   <span class="vd-p" title=${i.categoria + (i.barras ? ' · ' + i.barras : '')}>${i.produto}</span>
                   <span class="vd-iv">${brl(i.valor)}</span>
                 </div>`)}
               </div>`)}
+            ${outras.length && !busca ? html`<div class="md-rot" style=${{ margin: '12px 0 6px' }}>Outras transações (sem venda concluída)</div>
+              ${outras.map(t => html`<div class="vd-tx vd-tx-outra" key=${'o' + t.id}>
+                <div class="vd-txh">
+                  <span class="vd-time">${hora(t.datahora)}</span>
+                  <span class="vd-via">${t.via || ''}</span>
+                  <span class="vd-cli">${t.identificado ? '👤 ' + t.nome : 'sem CPF'}</span>
+                  <b class="vd-val vd-alerta">${t.tipo}</b>
+                  ${t.t ? html`<button class="vd-ver" title="Ver nas câmeras" onClick=${() => onVerCameras(t.t)}>${IC.cam}<span>ver</span></button>` : null}
+                </div>
+                <div class="vd-cdados">${t.pagamento ? html`<span>💳 ${t.pagamento}</span>` : null}
+                  ${t.qtd_produtos ? html`<span>${t.qtd_produtos} produto(s)</span>` : null}
+                  ${t.removidos && t.removidos !== '0' ? html`<span>${t.removidos} removido(s)</span>` : null}
+                  ${t.total ? html`<span>${brl(t.total)}</span>` : null}</div>
+              </div>`)}` : null}
           </div>
 
           <div class="vd-foot">

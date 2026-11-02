@@ -176,7 +176,31 @@ def commit_remoto():
     except Exception as e:
         log(f"atualização: não consegui consultar o GitHub ({type(e).__name__})"); return None
 
+ALTERADOS = []   # arquivos trocados na última atualização
+
+# o que reiniciar conforme o arquivo que mudou (gravação e go2rtc NÃO param numa atualização comum)
+MODULOS_PAINEL = {"painel_server.py", "market4u.py", "analise.py", "ocorrencias.py", "clipes.py", "ia.py",
+                  "leve.py", "diagnostico.py", "prateleiras.py"}
+
+def quem_reiniciar(alterados):
+    alvo = set()
+    for rel in alterados:
+        base = rel.split("/")[-1]
+        if rel.startswith("ui/") or not base.endswith(".py"):
+            continue                              # painel web/arquivos: o navegador pega no próximo F5
+        if base in MODULOS_PAINEL: alvo.add("painel")
+        if base == "gravador.py": alvo.add("manutencao")
+        if base == "prateleiras.py": alvo.add("prateleiras")
+        if base in ("scan_cameras.py", "setup_cameras.py", "gen_config.py", "reconfigurar.py", "servidor_24h.py"):
+            continue                              # só rodam quando pedidos
+        if base not in MODULOS_PAINEL and base not in ("gravador.py", "prateleiras.py", "supervisor.py",
+                                                       "scan_cameras.py", "setup_cameras.py", "gen_config.py",
+                                                       "reconfigurar.py", "servidor_24h.py"):
+            alvo |= {"painel", "manutencao", "prateleiras"}   # módulo novo/desconhecido: reinicia a análise e o painel
+    return alvo
+
 def atualizar(sha=None):
+    ALTERADOS.clear()
     """Baixa o zip do branch main e copia app/ por cima (sem tocar em senha, config e gravações)."""
     import zipfile, io, shutil
     sha = sha or commit_remoto()
@@ -201,7 +225,7 @@ def atualizar(sha=None):
             except OSError: atual = None
             if atual != novo:
                 with open(dest, "wb") as f: f.write(novo)
-                w(f"  atualizado: {rel}"); n += 1
+                w(f"  atualizado: {rel}"); n += 1; ALTERADOS.append(rel)
         if sha: open(VERSAO, "w").write(sha)
         w(f"===== atualizar: fim — {n} arquivo(s) alterado(s) =====")
         log(f"atualização aplicada: {n} arquivo(s) (commit {(sha or '')[:7]})")
@@ -282,6 +306,14 @@ def main():
                     log("supervisor.py atualizado; saindo para ser relançado pela tarefa agendada")
                     for p in reversed(procs): p.stop()
                     sys.exit(1)
+                else:
+                    # atualização comum: reinicia só o que mudou — gravação e go2rtc continuam
+                    alvo = quem_reiniciar(ALTERADOS)
+                    for p in procs:
+                        if p.name in alvo:
+                            p.stop(); p.p = None
+                    log(f"atualização aplicada sem parar a gravação; reiniciado: {', '.join(sorted(alvo)) or 'nada'}")
+                    ped = None
             if ped:
                 for p in reversed(procs): p.stop()
                 if ped == "reconfigurar": reconfigurar()

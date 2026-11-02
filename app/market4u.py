@@ -116,6 +116,10 @@ def ler_planilha(raw: bytes):
             "t": ep, "datahora": dh,
             "transacao": g(r, "ID transação"),
             "cliente": g(r, "Cliente"),
+            "cliente_id": g(r, "Id cliente"),
+            "email": g(r, "E-mail"),
+            "sexo": g(r, "Sexo"),
+            "idade": g(r, "Idade"),
             "via": g(r, "VIA"),
             "pdx": g(r, "PDX"),
             "produto": g(r, "Nome do produto"),
@@ -129,6 +133,47 @@ def ler_planilha(raw: bytes):
         })
     itens.sort(key=lambda x: x["datahora"], reverse=True)
     return itens
+
+
+def ler_transacoes(raw: bytes):
+    """CSV do relatório Transações -> {id da transação: dados da compra e do cliente}."""
+    for enc in ("utf-8-sig", "cp1252", "latin-1"):
+        try:
+            txt = raw.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    rows = list(csv.reader(io.StringIO(txt), delimiter=";"))
+    if not rows or "Data e hora" not in [_limpa(h) for h in rows[0]]:
+        raise Market4uErro("o relatório de transações veio num formato inesperado")
+    head = [_limpa(h) for h in rows[0]]
+    col = {h: i for i, h in enumerate(head) if h}
+    g = lambda r, h: _limpa(r[col[h]]) if h in col and col[h] < len(r) else ""
+    out = {}
+    for r in rows[1:]:
+        if not any(x.strip() for x in r):
+            continue
+        tid = g(r, "ID")
+        dh = g(r, "Data e hora")
+        try:
+            ep = time.mktime(datetime.strptime(dh[:19], "%Y-%m-%d %H:%M:%S").timetuple())
+        except ValueError:
+            ep = None
+        nome = g(r, "Nome Cliente")
+        cpf = g(r, "CPF na nota")
+        out[tid] = {
+            "id": tid, "t": ep, "datahora": dh, "tipo": g(r, "Tipo"), "via": g(r, "Via"),
+            "cliente_id": g(r, "Cliente ID"), "nome": nome, "status_cliente": g(r, "Status Cliente"),
+            "cpf_na_nota": cpf.lower().startswith("s"),
+            # sem CPF na nota = consumidor genérico da maquininha (o mesmo "cliente" para todo mundo)
+            "identificado": cpf.lower().startswith("s") and bool(nome) and "sem cpf" not in nome.lower(),
+            "pagamento": g(r, "Forma pagamento"), "split": g(r, "Split de pg"),
+            "compras_cliente": g(r, "Qtde compras"), "nao_compras_cliente": g(r, "Qtde não compras"),
+            "qtd_produtos": g(r, "Qtde produtos"), "removidos": g(r, "Qtde produtos removidos"),
+            "total": round(_num(g(r, "Total")), 2), "desconto": round(_num(g(r, "Desconto")), 2),
+            "estorno": round(_num(g(r, "Total Estorno")), 2), "nfce": g(r, "NFC-e"),
+        }
+    return out
 
 
 def resumo(itens):
@@ -352,7 +397,38 @@ class Market4u:
             if not c.get("conectado"):
                 c["conectado"] = True
                 self._salvar_cfg(c)
-            return {"dia": alvo, "buscado_em": time.time(), "itens": itens, "resumo": resumo(itens)}
+            r = {"dia": alvo, "buscado_em": time.time(), "itens": itens, "resumo": resumo(itens)}
+            try:
+                r["transacoes"] = self._transacoes(dia)
+            except Exception as e:
+                r["transacoes"] = self.transacoes_guardadas(dia)
+                r["transacoes_erro"] = str(e)
+            return r
+
+    def _transacoes(self, dia: date):
+        """Relatório Transações do dia (dados do cliente de cada compra). Não depende de filtro na sessão:
+        o filtro vai no próprio endereço da exportação."""
+        d = dia.strftime("%d/%m/%Y")
+        post = {"type-post": "ajax", "full": "1", "action_": "busca",
+                "DATA_JSON": json.dumps({"DATAHORA_DE": f"{d} 00:00", "DATAHORA_ATE": f"{d} 23:59"}),
+                "busca": "", "version-system": "app"}
+        q = urllib.parse.urlencode({"_action": "exportar", "POST": base64.b64encode(json.dumps(post).encode()).decode()})
+        st, hd, raw, _ = self._req("/parametros/cliente/lsttransacoes//IDENTIFICADOR/?" + q, referer="/relatorios/transacoes")
+        if st != 200 or b"formLoginSistema" in raw:
+            raise Market4uErro(f"o market4u não devolveu as transações (HTTP {st})")
+        tx = ler_transacoes(raw)
+        path = os.path.join(self.dir, "vendas", dia.strftime("%Y-%m-%d") + "_transacoes.csv")
+        with open(path + ".tmp", "wb") as f:
+            f.write(raw)
+        os.replace(path + ".tmp", path)
+        return tx
+
+    def transacoes_guardadas(self, dia: date):
+        path = os.path.join(self.dir, "vendas", dia.strftime("%Y-%m-%d") + "_transacoes.csv")
+        try:
+            return ler_transacoes(open(path, "rb").read())
+        except Exception:
+            return {}
 
     def vendas_cache(self, dia: date, max_idade=120, permitir_velho=True):
         """Vendas do dia usando a planilha já baixada quando ela ainda vale:
@@ -363,7 +439,8 @@ class Market4u:
         def do_arquivo(velha):
             itens = [i for i in ler_planilha(open(path, "rb").read()) if i["datahora"].startswith(alvo)]
             return {"dia": alvo, "buscado_em": os.path.getmtime(path), "itens": itens,
-                    "resumo": resumo(itens), "cache": True, "velha": velha}
+                    "resumo": resumo(itens), "cache": True, "velha": velha,
+                    "transacoes": self.transacoes_guardadas(dia)}
         if os.path.isfile(path):
             mt = os.path.getmtime(path)
             fim_dia = time.mktime(dia.timetuple()) + 86400
