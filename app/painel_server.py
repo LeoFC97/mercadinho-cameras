@@ -88,6 +88,15 @@ def _prat_eventos(dia):
     return {"dia": dia.strftime("%Y-%m-%d"), "eventos": sorted(evs, key=lambda e: e["inicio"], reverse=True),
             "vendas_ok": vendas_ok, "vendas_erro": erro}
 
+_ESTOQUE = None
+def estoque_srv():
+    global _ESTOQUE
+    if _ESTOQUE is None:
+        import estoque
+        _ESTOQUE = estoque.Estoque(m4u(), DADOS)
+    return _ESTOQUE
+
+
 _BI_BAIXA = None
 def bi_baixa():
     global _BI_BAIXA
@@ -296,6 +305,9 @@ class Handler(SimpleHTTPRequestHandler):
             return self._vendas_get(clean)
         if clean == "/api/bi":
             return self._bi_get()
+        if clean == "/api/estoque":
+            try: return self._json(200, estoque_srv().dados())
+            except Exception as e: return self._json(500, {"erro": f"erro inesperado: {e}"})
         if clean == "/api/bi/progresso":
             return self._json(200, bi_baixa().status())
         if clean.startswith("/leve/"):
@@ -588,8 +600,30 @@ class Handler(SimpleHTTPRequestHandler):
             return self._json(502, {"ok": False, "erro": str(e), "msg": str(e)})
         except Exception as e:
             return self._json(500, {"ok": False, "erro": f"erro inesperado: {e}", "msg": str(e)})
+    def _estoque_post(self, clean):
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+            req = json.loads(self.rfile.read(n) or b"{}") if n else {}
+            e = estoque_srv()
+            if clean == "/api/estoque/atualizar":
+                ok = e.atualizar()
+                out = e.dados()
+                if not ok and e.estado.get("erro"):
+                    out["erro_atualizar"] = e.estado["erro"]
+                return self._json(200, out)
+            if clean == "/api/estoque/config":
+                return self._json(200, e.salvar_config(req))
+            if clean == "/api/estoque/lista":
+                return self._json(200, e.salvar_lista(req.get("itens") or [], req.get("autor", "")))
+            return self._json(404, {"erro": "não encontrado"})
+        except (ValueError, TypeError) as ex:
+            return self._json(400, {"erro": str(ex)})
+        except Exception as ex:
+            return self._json(500, {"erro": f"erro inesperado: {ex}"})
     def do_POST(self):
         clean = self.path.split("?")[0]
+        if clean.startswith("/api/estoque/"):
+            return self._estoque_post(clean)
         if clean.startswith("/api/vendas/"):
             return self._vendas_post(clean)
         if clean.startswith("/api/ocorrencias") or clean.startswith("/api/clipes"):
@@ -682,4 +716,8 @@ if __name__ == "__main__":
     ThreadingHTTPServer.daemon_threads = True
     srv = ThreadingHTTPServer(("0.0.0.0", PORT), functools.partial(Handler, directory=UI))
     print(f"painel em http://0.0.0.0:{PORT}  (pasta {UI})", flush=True)
+    try:
+        estoque_srv().iniciar()      # estoque do CD/loja: atualiza sozinho a cada X minutos
+    except Exception as e:
+        print("estoque:", e, flush=True)
     srv.serve_forever()
