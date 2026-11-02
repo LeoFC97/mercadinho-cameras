@@ -192,7 +192,7 @@ def atualizar(sha=None):
             parts = info.filename.split("/")
             if len(parts) < 3 or parts[1] != "app" or info.is_dir(): continue
             rel = "/".join(parts[2:])
-            if parts[2] in ("scan", "logs", "pedidos", "dados") or rel.startswith("ui/rec/") or rel.startswith("ui/clipes/"): continue
+            if parts[2] in ("scan", "logs", "pedidos", "dados") or rel.startswith(("ui/rec/", "ui/clipes/", "ui/leve/")): continue
             if os.path.basename(rel) in NAO_SOBRESCREVER: continue
             dest = os.path.join(HERE, *parts[2:])
             os.makedirs(os.path.dirname(dest), exist_ok=True)

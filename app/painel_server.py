@@ -38,6 +38,14 @@ def clipes_srv():
         _cl = clipes.Clipes(HERE, REC, os.path.join(UI, "clipes"))
     return _cl
 
+_leve = None
+def leve_srv():
+    global _leve
+    if _leve is None:
+        import leve
+        _leve = leve.Leve(HERE, REC)
+    return _leve
+
 _ia = None
 def ia_srv():
     global _ia
@@ -277,6 +285,9 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception as e: return self._json(500, {"erro": str(e)})
         if clean.startswith("/api/vendas"):
             return self._vendas_get(clean)
+        if clean.startswith("/leve/"):
+            try: leve_srv().garantir(clean)      # converte o trecho (e adianta os próximos) antes de servir
+            except Exception: pass
         if clean in ("/api/analise", "/api/ocorrencias", "/api/clipes") or clean.startswith("/api/clipes/"):
             return self._oc_get(clean)
         if clean.startswith("/api/ia/"):

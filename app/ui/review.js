@@ -88,6 +88,12 @@ export function ReviewView({ cameras, nameOf, go2rtc, onExit, jump, extraButtons
   const [recarga, setRecarga] = useState(0);
   const diaCarregado = useRef(null);
   const [falhas, setFalhas] = useState({});           // camId -> motivo de não tocar
+  const [lentos, setLentos] = useState({});           // camId -> carregando devagar
+  // versão leve (convertida no notebook: ~3-4x menor) para internet fraca; liga sozinha se carregar devagar
+  const [leve, setLeveRaw] = useState(() => { try { return localStorage.getItem('mercadinho_rev_leve') === '1'; } catch { return false; } });
+  const leveRef = useRef(leve);
+  const setLeve = (v) => { leveRef.current = v; setLeveRaw(v); try { localStorage.setItem('mercadinho_rev_leve', v ? '1' : '0'); } catch {} };
+  const urlSeg = (camId, f) => `${leveRef.current ? '/leve' : '/rec'}/${camId}/${f}`;
   useEffect(() => {
     if (!day) return;
     const hoje = (() => { const d = new Date(); return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())}`; })();
@@ -118,6 +124,13 @@ export function ReviewView({ cameras, nameOf, go2rtc, onExit, jump, extraButtons
   }, [day, cameras, recarga]);
 
   // um trecho que o índice diz existir não tocou: descobre o motivo e mostra (em vez de tela preta)
+  useEffect(() => {
+    leveRef.current = leve;
+    cur.current = {}; pre.current = {};
+    for (const par of Object.values(pares.current)) for (const v of par || []) if (v) { v.pause(); v.removeAttribute('src'); v.load(); }
+    if (range) setTimeout(() => seekTo(tRef.current), 0);
+  }, [leve]);
+
   const falhou = async (camId, url) => {
     let motivo = 'não foi possível tocar este trecho';
     try {
@@ -161,7 +174,7 @@ export function ReviewView({ cameras, nameOf, go2rtc, onExit, jump, extraButtons
     }
     if (cur.current[camId] !== want) {
       cur.current[camId] = want;
-      v.src = `/rec/${camId}/${want}`;
+      v.src = urlSeg(camId, want);
       v.load();
       const onmeta = () => {
         v.removeEventListener('loadedmetadata', onmeta);
@@ -174,12 +187,22 @@ export function ReviewView({ cameras, nameOf, go2rtc, onExit, jump, extraButtons
       };
       v.addEventListener('loadedmetadata', onmeta);
       const url = `/rec/${camId}/${want}`;
-      const onerr = () => { v.removeEventListener('error', onerr); if (cur.current[camId] === want) falhou(camId, url); };
-      const ondata = () => { v.removeEventListener('loadeddata', ondata); ok(camId); };
+      const eraLeve = leveRef.current;
+      const pedido = v.src;   // o erro só vale se ainda for este mesmo endereço (trocar de modo gera erro "vazio")
+      const onerr = () => { v.removeEventListener('error', onerr); if (cur.current[camId] === want && v.src === pedido && v.getAttribute('src')) falhou(camId, url); };
+      const ondata = () => { v.removeEventListener('loadeddata', ondata); ok(camId); setLentos(l => (l[camId] ? (({ [camId]: _, ...r }) => r)(l) : l)); };
       v.addEventListener('error', onerr);
       v.addEventListener('loadeddata', ondata);
       // carregando há muito tempo sem nenhum quadro: avisa também
-      setTimeout(() => { if (cur.current[camId] === want && v.readyState < 2 && vids.current[camId] === v) falhou(camId, url); }, 12000);
+      // demorando para carregar NÃO é arquivo com problema: é internet lenta. Passa para a versão leve (1x)
+      // ou, se já está nela, só avisa "carregando devagar".
+      setTimeout(() => {
+        if (cur.current[camId] !== want || v.readyState >= 2 || vids.current[camId] !== v || v.src !== pedido) return;
+        if (!eraLeve && !leveRef.current) {
+          setLeve(true);
+          setAviso('Internet lenta até a loja: passei para a versão leve dos vídeos (botão "Original" volta).');
+        } else setLentos(l => ({ ...l, [camId]: true }));
+      }, 7000);
       lastFix.current[camId] = performance.now();
       return true;
     }
@@ -209,7 +232,7 @@ export function ReviewView({ cameras, nameOf, go2rtc, onExit, jump, extraButtons
     if (sp && nx && v.readyState >= 3 && folga >= Math.min(4, resta - 0.2) && pre.current[camId] !== nx.f && nx.t - (seg.t + seg.d) < 3) {
       pre.current[camId] = nx.f;
       sp.preload = 'auto';
-      sp.src = `/rec/${camId}/${nx.f}`;
+      sp.src = urlSeg(camId, nx.f);
       sp.load();
     }
     return true;
@@ -382,6 +405,10 @@ export function ReviewView({ cameras, nameOf, go2rtc, onExit, jump, extraButtons
           <button onClick=${() => changeDay(1)}>▶</button>
         </div>
         <div class="spacer"></div>
+        <div class="seg" title="Leve: vídeo convertido no notebook, bem menor — para ver pela internet fraca">
+          <button class=${leve ? '' : 'on'} onClick=${() => setLeve(false)}>Original</button>
+          <button class=${leve ? 'on' : ''} onClick=${() => setLeve(true)}>Leve</button>
+        </div>
         <button class="iconbtn" style=${{width:'auto',padding:'0 11px',fontSize:'12.5px',fontWeight:600}} title="Por que está travando? Mede a gravação, o notebook e a sua conexão" onClick=${() => pausarE('diag')}>ⓘ Diagnóstico</button>
         ${extraButtons || null}
         ${manifest && manifest.disk ? html`<div class="stat">disco <b>${manifest.disk.used_gb}</b>/${manifest.disk.cap_gb} GB</div>` : null}
@@ -403,7 +430,8 @@ export function ReviewView({ cameras, nameOf, go2rtc, onExit, jump, extraButtons
                      style=${{position:'absolute',inset:0,width:'100%',height:'100%',objectFit:'cover',background:'#000'}}></video>`)}
                   ${segAt(index[c.id] || [], dispT) < 0
                     ? html`<div class="offbox"><span>sem gravação</span></div>`
-                    : falhas[c.id] ? html`<div class="offbox"><span>⚠ ${falhas[c.id]}</span></div>` : null}
+                    : falhas[c.id] ? html`<div class="offbox"><span>⚠ ${falhas[c.id]}</span></div>`
+                    : lentos[c.id] ? html`<div class="offbox" style=${{background:'transparent'}}><div class="spin"></div><span>carregando devagar (internet até a loja)…</span></div>` : null}
                   <div class="sheen"></div>
                   <div class="cap"><span class="name">${nameOf(c)}</span><span class="ts">${c.ip || ''}</span></div>
                 </div>`)}
