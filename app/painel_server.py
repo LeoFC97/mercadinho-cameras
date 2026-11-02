@@ -88,6 +88,15 @@ def _prat_eventos(dia):
     return {"dia": dia.strftime("%Y-%m-%d"), "eventos": sorted(evs, key=lambda e: e["inicio"], reverse=True),
             "vendas_ok": vendas_ok, "vendas_erro": erro}
 
+_BI_BAIXA = None
+def bi_baixa():
+    global _BI_BAIXA
+    if _BI_BAIXA is None:
+        import bi
+        _BI_BAIXA = bi.BaixaDetalhes(m4u())
+    return _BI_BAIXA
+
+
 def _dia_param(path):
     from urllib.parse import urlparse, parse_qs
     from datetime import date, datetime as _dt
@@ -285,6 +294,10 @@ class Handler(SimpleHTTPRequestHandler):
             except Exception as e: return self._json(500, {"erro": str(e)})
         if clean.startswith("/api/vendas"):
             return self._vendas_get(clean)
+        if clean == "/api/bi":
+            return self._bi_get()
+        if clean == "/api/bi/progresso":
+            return self._json(200, bi_baixa().status())
         if clean.startswith("/leve/"):
             try: leve_srv().garantir(clean)      # converte o trecho (e adianta os próximos) antes de servir
             except Exception: pass
@@ -482,6 +495,43 @@ class Handler(SimpleHTTPRequestHandler):
             return self._json(404, {"erro": "não encontrado"})
         except KeyError as e:
             return self._json(404, {"erro": str(e).strip("'\"")})
+        except ValueError as e:
+            return self._json(400, {"erro": str(e)})
+        except Exception as e:
+            return self._json(500, {"erro": f"erro inesperado: {e}"})
+    # ---- dashboard (BI de vendas) ----
+    def _bi_get(self):
+        import market4u, bi
+        from urllib.parse import urlparse, parse_qs
+        from datetime import date, timedelta, datetime as _dt
+        try:
+            q = parse_qs(urlparse(self.path).query)
+            de_s, ate_s = (q.get("de") or [""])[0], (q.get("ate") or [""])[0]
+            if not (DAY_RE.match(de_s) and DAY_RE.match(ate_s)):
+                raise ValueError("período inválido")
+            de, ate = _dt.strptime(de_s, "%Y-%m-%d").date(), _dt.strptime(ate_s, "%Y-%m-%d").date()
+            ate = min(ate, date.today())
+            if de > ate or (ate - de).days > 366:
+                raise ValueError("período inválido (máximo 1 ano)")
+            n = (ate - de).days + 1
+            pde = de - timedelta(days=n)
+            aviso, precisa = None, False
+            try:
+                m4u().garantir_vendas(pde, ate)            # planilhas de vendas: rápido (uma exportação)
+            except market4u.PrecisaLogin as e:
+                precisa, aviso = True, str(e)
+            except Exception as e:
+                aviso = str(e)
+            if not precisa:
+                # clientes/pagamentos/removidos: devagar, em segundo plano (atual primeiro, mais recente primeiro)
+                hoje = date.today()
+                atual = [ate - timedelta(days=i) for i in range(n) if ate - timedelta(days=i) <= hoje]
+                anterior = [de - timedelta(days=i) for i in range(1, n + 1)]
+                bi_baixa().pedir(atual + anterior)
+            out = bi.calcular(m4u(), de, ate)
+            out["aviso"], out["precisa_login"] = aviso, precisa
+            out["baixando"] = bi_baixa().status()
+            return self._json(200, out)
         except ValueError as e:
             return self._json(400, {"erro": str(e)})
         except Exception as e:

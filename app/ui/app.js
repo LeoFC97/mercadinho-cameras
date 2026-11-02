@@ -5,6 +5,7 @@ import { VendasPanel } from './vendas.js';
 import { OcorrenciasView } from './ocorrencias.js';
 import { IAView } from './ia.js';
 import { PrateleirasView } from './prateleiras.js';
+import { DashboardView } from './dashboard.js';
 
 const { useState, useEffect, useRef, useCallback } = React;
 const html = htm.bind(React.createElement);
@@ -23,6 +24,7 @@ const I = {
   ext: html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3"/></svg>`,
   history: html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v5h5"/><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8"/><path d="M12 7v5l3 2"/></svg>`,
   edit: html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>`,
+  bi: html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 15v2M11 10v7M15 12v5M19 6v11"/></svg>`,
   ia: html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" rx="3"/><path d="M9 9h6v6H9zM9 2v3M15 2v3M9 19v3M15 19v3M2 9h3M2 15h3M19 9h3M19 15h3"/></svg>`,
   shelf: html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18M21 3v18M3 9h18M3 15h18"/><path d="M6 6.5h3M12 12.5h4M7 18.5h2"/></svg>`,
   flag: html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 22V4"/><path d="M4 4h13l-2 4 2 4H4"/></svg>`,
@@ -206,30 +208,34 @@ function App() {
   const ocBtn = html`<button class=${'iconbtn' + (mode === 'ocorrencias' ? ' on' : '')} title="Ocorrências marcadas e clipes" onClick=${() => { setOcAbrir(null); setMode('ocorrencias'); }} style=${{width:'auto',padding:'0 12px',gap:'7px'}}>${I.flag}<span style=${{fontSize:'12.5px',fontWeight:600}}>Ocorrências</span>${ocAbertas ? html`<span class="oc-badge">${ocAbertas}</span>` : null}</button>`;
   const iaBtn = html`<button class=${'iconbtn' + (mode === 'ia' ? ' on' : '')} title="Inteligência Artificial — fotos e marcações dos produtos" onClick=${() => setMode('ia')} style=${{width:'auto',padding:'0 12px',gap:'7px'}}>${I.ia}<span style=${{fontSize:'12.5px',fontWeight:600}}>IA</span></button>`;
   const pratBtn = html`<button class=${'iconbtn' + (mode === 'prateleiras' ? ' on' : '')} title="Prateleiras — zonas de interesse, itens e o que saiu" onClick=${() => setMode('prateleiras')} style=${{width:'auto',padding:'0 12px',gap:'7px'}}>${I.shelf}<span style=${{fontSize:'12.5px',fontWeight:600}}>Prateleiras</span></button>`;
+  const dbBtn = html`<button class=${'iconbtn' + (mode === 'dashboard' ? ' on' : '')} title="Dashboard de vendas — indicadores, gráficos e análises" onClick=${() => setMode('dashboard')} style=${{width:'auto',padding:'0 12px',gap:'7px'}}>${I.bi}<span style=${{fontSize:'12.5px',fontWeight:600}}>Dashboard</span></button>`;
   const shell = (main) => html`<div class="shell">
       <div class="shell-main">${main}</div>
       ${vendasOpen ? html`<${VendasPanel} autoBuscar=${vendasNonce} onClose=${() => setVendasOpen(false)} onVerCameras=${verNasCameras} />` : null}
     </div>`;
 
   if (mode === 'review')
-    return shell(html`<${ReviewView} cameras=${CAMERAS} nameOf=${nameOf} go2rtc=${G} onExit=${() => setMode('live')} jump=${jump} extraButtons=${html`${pratBtn}${iaBtn}${ocBtn}${vendasBtn}`} onAbrirOcorrencia=${abrirOcorrencia} />`);
+    return shell(html`<${ReviewView} cameras=${CAMERAS} nameOf=${nameOf} go2rtc=${G} onExit=${() => setMode('live')} jump=${jump} extraButtons=${html`${dbBtn}${pratBtn}${iaBtn}${ocBtn}${vendasBtn}`} onAbrirOcorrencia=${abrirOcorrencia} />`);
   if (mode === 'prateleiras')
     return shell(html`<div style=${{height:'100%'}}>
       <${PrateleirasView} cameras=${CAMERAS} nameOf=${nameOf} onExit=${() => setMode('live')} onVer=${irRevisao}
-        extraButtons=${html`${iaBtn}${ocBtn}${vendasBtn}`} onToast=${showToast} />
+        extraButtons=${html`${dbBtn}${iaBtn}${ocBtn}${vendasBtn}`} onToast=${showToast} />
       <div class=${'toast' + (toast ? ' show' : '')}>${toast}</div>
     </div>`);
   if (mode === 'ia')
     return shell(html`<div style=${{height:'100%'}}>
-      <${IAView} cameras=${CAMERAS} nameOf=${nameOf} go2rtc=${G} onExit=${() => setMode('live')} extraButtons=${html`${pratBtn}${ocBtn}${vendasBtn}`} onToast=${showToast} />
+      <${IAView} cameras=${CAMERAS} nameOf=${nameOf} go2rtc=${G} onExit=${() => setMode('live')} extraButtons=${html`${dbBtn}${pratBtn}${ocBtn}${vendasBtn}`} onToast=${showToast} />
       <div class=${'toast' + (toast ? ' show' : '')}>${toast}</div>
     </div>`);
   if (mode === 'ocorrencias')
     return shell(html`<div style=${{height:'100%'}}>
       <${OcorrenciasView} cameras=${CAMERAS} nameOf=${nameOf} onExit=${() => setMode('live')} onVer=${irRevisao}
-        abrirId=${ocAbrir} extraButtons=${html`${iaBtn}${vendasBtn}`} onToast=${showToast} />
+        abrirId=${ocAbrir} extraButtons=${html`${dbBtn}${iaBtn}${vendasBtn}`} onToast=${showToast} />
       <div class=${'toast' + (toast ? ' show' : '')}>${toast}</div>
     </div>`);
+  if (mode === 'dashboard')
+    return shell(html`<${DashboardView} onExit=${() => setMode('live')} extraButtons=${html`${ocBtn}${vendasBtn}`}
+      onAbrirVendas=${() => { setVendasOpen(true); setVendasNonce(n => n + 1); }} />`);
   if (mode === 'disk')
     return shell(html`<div style=${{height:'100%'}}>
       <${DiskView} cameras=${CAMERAS} nameOf=${nameOf} onExit=${() => setMode('live')} onToast=${showToast} />
@@ -262,6 +268,7 @@ function App() {
         ${pratBtn}
         ${iaBtn}
         ${ocBtn}
+        ${dbBtn}
         ${vendasBtn}
         <button class="iconbtn" title="Disco — espaço e limpeza das gravações" onClick=${() => setMode('disk')} style=${{width:'auto',padding:'0 12px',gap:'7px'}}>${I.disk}<span style=${{fontSize:'12.5px',fontWeight:600}}>Disco</span></button>
         <button class="iconbtn" title="Tela cheia (F)" onClick=${fsAll}>${I.full}</button>

@@ -211,6 +211,12 @@ def ler_removidos(raw: bytes):
     return out
 
 
+def deslogado(raw: bytes) -> bool:
+    """O market4u devolveu a tela de login ou o aviso 'Você foi desconectado' em vez do relatório?"""
+    ini = raw[:400].lstrip()
+    return b"formLoginSistema" in raw or (ini.startswith(b"{") and b"desconectado" in ini)
+
+
 def resumo(itens):
     trans = {i["transacao"] for i in itens if i["transacao"]}
     return {
@@ -263,7 +269,7 @@ class Market4u:
             pass
 
     # --- http ---
-    def _req(self, path, data=None, ajax=False, referer=None):
+    def _req(self, path, data=None, ajax=False, referer=None, timeout=TIMEOUT):
         url = path if path.startswith("http") else BASE + path
         body = urllib.parse.urlencode(data).encode() if isinstance(data, dict) else data
         rq = urllib.request.Request(url, data=body, method="POST" if body is not None else "GET")
@@ -277,7 +283,7 @@ class Market4u:
         if body is not None:
             rq.add_header("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
         try:
-            r = self.op.open(rq, timeout=TIMEOUT)
+            r = self.op.open(rq, timeout=timeout)
             return r.status, r.headers, r.read(), r.geturl()
         except urllib.error.HTTPError as e:
             return e.code, e.headers, e.read(), url
@@ -453,8 +459,11 @@ class Market4u:
                 "DATA_JSON": json.dumps({"DATAHORA_DE": f"{d} 00:00", "DATAHORA_ATE": f"{d} 23:59"}),
                 "busca": "", "version-system": "app"}
         q = urllib.parse.urlencode({"_action": "exportar", "POST": base64.b64encode(json.dumps(post).encode()).decode()})
-        st, hd, raw, _ = self._req("/parametros/cliente/lsttransacoes//IDENTIFICADOR/?" + q, referer="/relatorios/transacoes")
-        if st != 200 or b"formLoginSistema" in raw:
+        # o market4u leva uns 10-15 s por dia para gerar este relatório
+        st, hd, raw, _ = self._req("/parametros/cliente/lsttransacoes//IDENTIFICADOR/?" + q, referer="/relatorios/transacoes", timeout=180)
+        if deslogado(raw):
+            raise PrecisaLogin("o market4u encerrou a sessão do painel; conecte de novo")
+        if st != 200:
             raise Market4uErro(f"o market4u não devolveu as transações (HTTP {st})")
         tx = ler_transacoes(raw)
         path = os.path.join(self.dir, "vendas", dia.strftime("%Y-%m-%d") + "_transacoes.csv")
@@ -470,8 +479,10 @@ class Market4u:
                 "DATA_JSON": json.dumps({"DATAHORA_DE": f"{d} 00:00", "DATAHORA_ATE": f"{d} 23:59"}),
                 "limparsessao": "0", "version-system": "app"}
         q = urllib.parse.urlencode({"_action": "exportar", "POST": base64.b64encode(json.dumps(post).encode()).decode()})
-        st, hd, raw, _ = self._req("/relatorios/produtoabandonado/lst/?" + q, referer="/relatorios/produtos-abandonados")
-        if st != 200 or b"formLoginSistema" in raw:
+        st, hd, raw, _ = self._req("/relatorios/produtoabandonado/lst/?" + q, referer="/relatorios/produtos-abandonados", timeout=90)
+        if deslogado(raw):
+            raise PrecisaLogin("o market4u encerrou a sessão do painel; conecte de novo")
+        if st != 200:
             raise Market4uErro(f"o market4u não devolveu os produtos removidos (HTTP {st})")
         rem = ler_removidos(raw)
         path = os.path.join(self.dir, "vendas", dia.strftime("%Y-%m-%d") + "_removidos.csv")
@@ -516,6 +527,112 @@ class Market4u:
             if permitir_velho and os.path.isfile(path):
                 return do_arquivo(True)
             raise
+
+    # --- vários dias de uma vez (Dashboard) ---
+    def _arq(self, dia, suf=""):
+        return os.path.join(self.dir, "vendas", dia.strftime("%Y-%m-%d") + suf + ".csv")
+
+    @staticmethod
+    def _definitivo(paths, dia, max_idade):
+        """Arquivos existem e foram baixados depois do fim do dia (não mudam mais) ou há pouco tempo."""
+        if not all(os.path.isfile(p) for p in paths):
+            return False
+        mt = min(os.path.getmtime(p) for p in paths)
+        fim_dia = time.mktime(dia.timetuple()) + 86400
+        return mt > fim_dia + 600 or time.time() - mt < max_idade
+
+    def vendas_ok(self, dia: date, max_idade=600):
+        return self._definitivo([self._arq(dia)], dia, max_idade)
+
+    def detalhes_ok(self, dia: date, max_idade=1800):
+        return self._definitivo([self._arq(dia, "_transacoes"), self._arq(dia, "_removidos")], dia, max_idade)
+
+    @staticmethod
+    def _csv_linhas(raw: bytes):
+        for enc in ("utf-8-sig", "cp1252", "latin-1"):
+            try:
+                txt = raw.decode(enc)
+                break
+            except UnicodeDecodeError:
+                continue
+        rows = [r for r in csv.reader(io.StringIO(txt), delimiter=";")]
+        return (rows[0], [r for r in rows[1:] if any(x.strip() for x in r)]) if rows else ([], [])
+
+    def _gravar_dia(self, path, head, rows):
+        buf = io.StringIO()
+        w = csv.writer(buf, delimiter=";", lineterminator="\r\n")
+        w.writerow(head)
+        w.writerows(rows)
+        with open(path + ".tmp", "wb") as f:
+            f.write(buf.getvalue().encode("cp1252", "replace"))
+        os.replace(path + ".tmp", path)
+
+    def _baixar_vendas_trecho(self, de: date, ate: date):
+        """Planilha de vendas de vários dias seguidos (uma exportação só, rápida) -> um arquivo por dia."""
+        from datetime import timedelta
+        d1, d2 = de.strftime("%d/%m/%Y"), ate.strftime("%d/%m/%Y")
+        filtro = {"DATAHORA_DE": f"{d1} 00:00", "DATAHORA_ATE": f"{d2} 23:59"}
+        dias, d = [], de
+        while d <= ate:
+            dias.append(d.strftime("%Y-%m-%d"))
+            d += timedelta(days=1)
+        with self.lock:
+            self._garantir_sessao()
+            post = {"type-post": "ajax", "full": "1", "lote": "1", "DATA_JSON": json.dumps(filtro),
+                    "limparsession": "0", "version-system": self.version_system}
+            st, hd, body, _ = self._req("/relatorios/produtosvendido/lst/", post, ajax=True, referer="/relatorios/produtos-vendidos")
+            if st == 401 or deslogado(body):
+                raise PrecisaLogin("o market4u recusou a consulta (sessão expirada); conecte de novo")
+            if st != 200:
+                raise Market4uErro(f"o market4u respondeu HTTP {st} ao filtrar o relatório")
+            st, hd, raw, _ = self._req("/relatorios/exportar-produtos-vendidos", referer="/relatorios/produtos-vendidos", timeout=120)
+            if deslogado(raw):
+                raise PrecisaLogin("sessão do market4u expirada; conecte de novo")
+            if st != 200:
+                raise Market4uErro(f"o market4u não devolveu a planilha (HTTP {st})")
+            self._salvar_cookies()
+        head, rows = self._csv_linhas(raw)
+        hl = [_limpa(h) for h in head]
+        if "Data e hora" not in hl:
+            raise Market4uErro("a planilha veio num formato inesperado")
+        ih = hl.index("Data e hora")
+        vendas = {k: [] for k in dias}
+        for r in rows:
+            k = _limpa(r[ih])[:10] if ih < len(r) else ""
+            if k in vendas:
+                vendas[k].append(r)
+        if rows and not any(vendas.values()):
+            raise Market4uErro("o market4u devolveu outro período; tente de novo")
+        for k in dias:
+            self._gravar_dia(self._arq(datetime.strptime(k, "%Y-%m-%d").date()), head, vendas[k])
+
+    def garantir_vendas(self, de: date, ate: date, max_idade=600):
+        """Baixa as planilhas de vendas que faltam no período (blocos de até 62 dias). Devolve quantos dias baixou."""
+        from datetime import timedelta
+        ate = min(ate, date.today())
+        falta, d = [], de
+        while d <= ate:
+            if not self.vendas_ok(d, max_idade):
+                falta.append(d)
+            d += timedelta(days=1)
+        blocos = []
+        for d in falta:
+            if blocos and (d - blocos[-1][1]).days == 1 and (d - blocos[-1][0]).days < 62:
+                blocos[-1][1] = d
+            else:
+                blocos.append([d, d])
+        for a, b in blocos:
+            self._baixar_vendas_trecho(a, b)
+        return len(falta)
+
+    def baixar_detalhes(self, dia: date):
+        """Transações (clientes, pagamento) e removidos de um dia. O market4u é lento aqui (~10-15 s por dia),
+        e essas exportações não usam o filtro da sessão, então não seguram a trava das outras consultas."""
+        with self.lock:
+            self._garantir_sessao()
+        self._transacoes(dia)
+        self._removidos(dia)
+        self._salvar_cookies()
 
     def planilha(self, dia: date):
         path = os.path.join(self.dir, "vendas", dia.strftime("%Y-%m-%d") + ".csv")
