@@ -82,6 +82,7 @@ Os parâmetros ficam em `gravador.env` no servidor, ou em variáveis de ambiente
 |---|---|---|
 | `GRACE_HOURS` | 2 | As últimas N horas nunca são apagadas, mesmo sem movimento. |
 | `AUTO_UPDATE` / `UPDATE_EVERY_MIN` | 1 / 10 | Atualização automática a partir do GitHub (`REPO_GITHUB`, padrão `LeoFC97/mercadinho-cameras`). |
+| `AUTO_SCAN` / `SCAN_EVERY_MIN` | 1 / 15 | Varredura automática da rede: câmera nova que aparece é configurada e passa a gravar sozinha (câmera que some não é removida). |
 | `MOTION_THRESHOLD` | 0.8 | Sensibilidade do movimento: maior guarda menos, menor guarda mais. |
 | `CAP_GB` / `FREE_FLOOR_GB` | 18 / 12 | Teto de disco: apaga o mais antigo antes de encher. |
 | `RETENTION_HOURS` | 72 | Idade máxima das gravações. |

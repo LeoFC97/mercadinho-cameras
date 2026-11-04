@@ -144,15 +144,16 @@ def build_procs():
     procs.append(Proc("prateleiras", PYX + [os.path.join(HERE, "prateleiras.py")], baixa=True))   # zonas: o que saiu da prateleira
     return procs
 
-def reconfigurar():
-    """Procura as câmeras de novo, testa a senha e gera a configuração (roda como SYSTEM, lê senha.txt)."""
+def reconfigurar(varrer=True):
+    """Procura as câmeras de novo (opcional), testa a senha e gera a configuração (roda como SYSTEM, lê senha.txt)."""
     env = dict(os.environ, PYTHONIOENCODING="utf-8")
     env.setdefault("FFPROBE", os.path.join(HERE, "bin", "ffprobe.exe" if IS_WIN else "ffprobe"))
     lf = os.path.join(LOGD, "reconfigurar.log")
     with open(lf, "a", encoding="utf-8") as out:
         out.write(time.strftime("%Y-%m-%d %H:%M:%S ") + "===== reconfigurar (pelo supervisor): início =====\n"); out.flush()
-        for args in (PYX + [os.path.join(HERE, "scan_cameras.py")],
-                     PYX + [os.path.join(HERE, "setup_cameras.py"), "--senha-arquivo", os.path.join(HERE, "senha.txt")]):
+        passos = ([PYX + [os.path.join(HERE, "scan_cameras.py")]] if varrer else []) + \
+                 [PYX + [os.path.join(HERE, "setup_cameras.py"), "--senha-arquivo", os.path.join(HERE, "senha.txt")]]
+        for args in passos:
             try:
                 subprocess.run(args, cwd=HERE, stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                                env=env, timeout=600, creationflags=NOWIN)
@@ -162,6 +163,21 @@ def reconfigurar():
 
 REPO = os.environ.get("REPO_GITHUB", "LeoFC97/mercadinho-cameras")
 AUTO_UPDATE = os.environ.get("AUTO_UPDATE", "1") == "1"
+AUTO_SCAN = os.environ.get("AUTO_SCAN", "1") == "1"
+SCAN_EVERY = int(float(os.environ.get("SCAN_EVERY_MIN", "15"))) * 60
+
+def camera_nova():
+    """Varre a rede (scan_cameras.py) e devolve os IPs de câmeras que respondem mas não estão na
+    configuração. Câmera que sumiu NÃO conta (pode ser queda momentânea); só o que apareceu."""
+    env = dict(os.environ, PYTHONIOENCODING="utf-8")
+    try:
+        subprocess.run(PYX + [os.path.join(HERE, "scan_cameras.py")], cwd=HERE, capture_output=True,
+                       stdin=subprocess.DEVNULL, env=env, timeout=300, creationflags=NOWIN)
+        achadas = json.load(open(os.path.join(HERE, "scan", "cameras.json"), encoding="utf-8")).get("provaveis_cameras", [])
+    except Exception as e:
+        log(f"varredura automática falhou: {type(e).__name__}: {e}"); return []
+    configuradas = {c.split("_")[-1] for c in cams()}
+    return [ip for ip in achadas if ip.split(".")[-1] not in configuradas]
 UPDATE_EVERY = int(float(os.environ.get("UPDATE_EVERY_MIN", "10"))) * 60
 VERSAO = os.path.join(HERE, "versao.txt")          # sha do último commit instalado
 NAO_SOBRESCREVER = {"senha.txt", "go2rtc.yaml", "gravador.env", "cameras_conhecidas.json", "versao.txt", "config.js"}
@@ -284,8 +300,20 @@ def main():
     signal.signal(signal.SIGTERM, bye); signal.signal(signal.SIGINT, bye)
 
     ultima_checagem = 0
+    ultima_varredura = time.time() - SCAN_EVERY + 60   # primeira varredura ~1 min após subir; depois a cada SCAN_EVERY
     while True:
         ped = pedido()
+        # varredura automática: câmera nova na rede -> reconfigura e passa a gravar, sem ninguém clicar
+        if not ped and AUTO_SCAN and time.time() - ultima_varredura > SCAN_EVERY:
+            ultima_varredura = time.time()
+            novas = camera_nova()
+            if novas:
+                log(f"câmera(s) nova(s) na rede: {', '.join(novas)}; reconfigurando")
+                for p in reversed(procs): p.stop()
+                reconfigurar(varrer=False)
+                procs = build_procs()
+                log(f"sistema reiniciado (câmera nova); câmeras: {', '.join(cams())}")
+                continue
         # checagem automática do GitHub: se o commit mudou, atualiza e reinicia
         if not ped and AUTO_UPDATE and time.time() - ultima_checagem > UPDATE_EVERY:
             ultima_checagem = time.time()

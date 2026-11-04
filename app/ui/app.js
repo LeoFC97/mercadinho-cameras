@@ -15,6 +15,8 @@ const CFG = window.APP_CONFIG || { go2rtc: 'auto', cameras: [] };
 // 'auto' = mesmo host que serviu o painel (localhost, IP da loja ou nome Tailscale), porta 1984
 const G = (CFG.go2rtc && CFG.go2rtc !== 'auto' ? CFG.go2rtc : `${location.protocol}//${location.hostname}:1984`).replace(/\/$/, '');
 const CAMERAS = CFG.cameras || [];
+// grade automática: 1 | 2×2 | 5 = 3 em cima e 2 centralizadas embaixo (mesmo tamanho) | 3 colunas
+export const autoCols = n => (n <= 1 ? 'cols-1' : n <= 4 ? 'cols-2' : n === 5 ? 'cols-5' : 'cols-3');
 
 /* ---------- ícones ---------- */
 const I = {
@@ -193,7 +195,7 @@ function App() {
   }, [view, mode]);
 
   const colClass = cols === 'auto'
-    ? (CAMERAS.length <= 1 ? 'cols-1' : CAMERAS.length <= 4 ? 'cols-2' : 'cols-3')
+    ? autoCols(CAMERAS.length)
     : 'cols-' + cols;
 
   const onlineCount = Object.values(online).filter(s => s === 'live').length;

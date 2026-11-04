@@ -55,6 +55,11 @@ body{
 .grid.cols-1{grid-template-columns:1fr}
 .grid.cols-2{grid-template-columns:1fr 1fr}
 .grid.cols-3{grid-template-columns:repeat(3,1fr)}
+/* 5 câmeras: 3 em cima, 2 centralizadas embaixo, todas do mesmo tamanho (grade de 6 colunas) */
+.grid.cols-5{grid-template-columns:repeat(6,1fr);grid-template-rows:1fr 1fr}
+.grid.cols-5>.tile{grid-column:span 2}
+.grid.cols-5>.tile:nth-child(4){grid-column:2/span 2}
+.grid.cols-5>.tile:nth-child(5){grid-column:4/span 2}
 
 /* ---------- Camera tile ---------- */
 .tile{

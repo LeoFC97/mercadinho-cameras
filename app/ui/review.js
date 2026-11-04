@@ -392,7 +392,8 @@ export function ReviewView({ cameras, nameOf, go2rtc, onExit, jump, extraButtons
     next: html`<svg viewBox="0 0 24 24" fill="currentColor"><path d="M16 6h2v12h-2zM4 6l9 6-9 6z"/></svg>`,
     live: html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3" fill="currentColor"/><path d="M5 5a10 10 0 0 0 0 14M19 5a10 10 0 0 1 0 14"/></svg>`,
   };
-  const cols = cameras.length <= 1 ? 'cols-1' : cameras.length <= 4 ? 'cols-2' : 'cols-3';
+  const n = cameras.length;
+  const cols = n <= 1 ? 'cols-1' : n <= 4 ? 'cols-2' : n === 5 ? 'cols-5' : 'cols-3';
 
   return html`
     <div style=${{ height: '100%', display: 'flex', flexDirection: 'column', background: 'var(--bg)' }}>
