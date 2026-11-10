@@ -166,18 +166,52 @@ AUTO_UPDATE = os.environ.get("AUTO_UPDATE", "1") == "1"
 AUTO_SCAN = os.environ.get("AUTO_SCAN", "1") == "1"
 SCAN_EVERY = int(float(os.environ.get("SCAN_EVERY_MIN", "15"))) * 60
 
+def _ip_configurado():
+    """{id: ip} das câmeras no go2rtc.yaml de agora."""
+    out, atual = {}, ""
+    try:
+        for line in open(os.path.join(HERE, "go2rtc.yaml"), encoding="utf-8"):
+            m = re.match(r"^  ([\w-]+):\s*$", line)
+            if m: atual = m.group(1)
+            m2 = re.search(r"@([\d.]+):554", line)
+            if m2 and atual and not atual.endswith("_sub"): out[atual] = m2.group(1)
+    except Exception:
+        pass
+    return out
+
 def camera_nova():
-    """Varre a rede (scan_cameras.py) e devolve os IPs de câmeras que respondem mas não estão na
-    configuração. Câmera que sumiu NÃO conta (pode ser queda momentânea); só o que apareceu."""
+    """Varre a rede (scan_cameras.py) e devolve o que pede reconfigurar: câmera nova (MAC nunca visto) ou
+    câmera conhecida que o roteador mudou de IP. Câmera que sumiu NÃO conta (pode ser queda momentânea),
+    e aparelho que já recusou a senha também não (senão o sistema reiniciaria a cada varredura)."""
     env = dict(os.environ, PYTHONIOENCODING="utf-8")
     try:
         subprocess.run(PYX + [os.path.join(HERE, "scan_cameras.py")], cwd=HERE, capture_output=True,
                        stdin=subprocess.DEVNULL, env=env, timeout=300, creationflags=NOWIN)
-        achadas = json.load(open(os.path.join(HERE, "scan", "cameras.json"), encoding="utf-8")).get("provaveis_cameras", [])
+        scan = json.load(open(os.path.join(HERE, "scan", "cameras.json"), encoding="utf-8"))
+        achadas = scan.get("provaveis_cameras", [])
+        macs = {h["ip"]: (h.get("mac") or "").upper() for h in scan.get("hosts", [])}
     except Exception as e:
         log(f"varredura automática falhou: {type(e).__name__}: {e}"); return []
-    configuradas = {c.split("_")[-1] for c in cams()}
-    return [ip for ip in achadas if ip.split(".")[-1] not in configuradas]
+    try:
+        mapa = json.load(open(os.path.join(HERE, "dados", "cameras_mac.json"), encoding="utf-8"))
+    except Exception:
+        mapa = {}
+    conf = _ip_configurado()
+    ips_conf = set(conf.values())
+    mudou = []
+    for ip in achadas:
+        mac = macs.get(ip, "")
+        info = mapa.get(mac) if mac else None
+        if info and info.get("falhou"):
+            continue                                   # já recusou a senha: não é câmera nossa
+        if info and info.get("id") in conf:
+            if conf[info["id"]] != ip:
+                mudou.append(f"{ip} ({info['id']} mudou de IP)")
+            continue
+        if ip not in ips_conf:
+            mudou.append(ip)
+    return mudou
+
 UPDATE_EVERY = int(float(os.environ.get("UPDATE_EVERY_MIN", "10"))) * 60
 VERSAO = os.path.join(HERE, "versao.txt")          # sha do último commit instalado
 NAO_SOBRESCREVER = {"senha.txt", "go2rtc.yaml", "gravador.env", "cameras_conhecidas.json", "versao.txt", "config.js"}
@@ -301,12 +335,23 @@ def main():
 
     ultima_checagem = 0
     ultima_varredura = time.time() - SCAN_EVERY + 60   # primeira varredura ~1 min após subir; depois a cada SCAN_EVERY
+    espera_falha = 180                                  # varredura extra quando a gravação de uma câmera fica caindo
     while True:
         ped = pedido()
         # varredura automática: câmera nova na rede -> reconfigura e passa a gravar, sem ninguém clicar
+        # gravação de alguma câmera caindo sem parar (ex.: o roteador trocou o IP dela): varre já, sem esperar
+        # os 15 min — no máximo uma vez a cada 3 min
+        caindo = [p.name for p in procs if p.name.startswith("grava_") and p.restarts - getattr(p, "_rest_base", 0) >= 6]
+        por_falha = False
+        if caindo and AUTO_SCAN and time.time() - ultima_varredura > espera_falha:
+            log(f"gravação falhando em {', '.join(caindo)}; procurando as câmeras na rede agora")
+            for p in procs: p._rest_base = p.restarts
+            ultima_varredura, por_falha = time.time() - SCAN_EVERY - 1, True
         if not ped and AUTO_SCAN and time.time() - ultima_varredura > SCAN_EVERY:
             ultima_varredura = time.time()
             novas = camera_nova()
+            # câmera desligada não volta com varredura: espaça as varreduras por falha (3 → 6 → 12 → 15 min)
+            espera_falha = 180 if novas else (min(900, espera_falha * 2) if por_falha else espera_falha)
             if novas:
                 log(f"câmera(s) nova(s) na rede: {', '.join(novas)}; reconfigurando")
                 for p in reversed(procs): p.stop()

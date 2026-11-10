@@ -24,12 +24,23 @@ function segAt(list, t) {
 
 const MOTION_TH = 1.6;
 
-export function ReviewView({ cameras, nameOf, go2rtc, onExit, jump, extraButtons, onAbrirOcorrencia }) {
+export function ReviewView({ cameras: camerasAtivas, nameOf, go2rtc, onExit, jump, extraButtons, onAbrirOcorrencia }) {
   const [manifest, setManifest] = useState(null);
   const [day, setDay] = useState(null);
   const [index, setIndex] = useState({});     // camId -> [ {t,d,m,f} ] ordenado
   const [range, setRange] = useState(null);   // {start,end} epoch do dia com gravação
   const [dispT, setDispT] = useState(0);
+  // câmeras do dia: as atuais que gravaram nesse dia + as antigas (mesma câmera com outro IP/nome) que gravaram
+  const cameras = useMemo(() => {
+    const dc = manifest && manifest.dias_cam;
+    if (!dc || !day) return camerasAtivas;
+    const ultimo = manifest.days && manifest.days[manifest.days.length - 1];
+    const ativ = camerasAtivas.filter(c => day === ultimo || (dc[c.id] || []).includes(day));
+    const antigas = Object.keys(dc).filter(id => !camerasAtivas.some(c => c.id === id) && dc[id].includes(day))
+      .map(id => ({ id, name: 'Câmera ' + id.split('_').pop() + ' (antiga)', antiga: true }));
+    const r = [...ativ, ...antigas];
+    return r.length ? r : camerasAtivas;
+  }, [camerasAtivas, manifest, day]);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState(1);
   const [err, setErr] = useState('');

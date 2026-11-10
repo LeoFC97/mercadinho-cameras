@@ -290,12 +290,21 @@ class IA:
 
     def capturar_gravacao(self, cams, tempos, autor="", venda=None):
         """Fotos tiradas das gravações nos horários pedidos (ex.: perto de uma venda)."""
-        cams = [c for c in (cams or []) if c in self.cams_fn()]
+        cams = [c for c in (cams or []) if ID_RE.match(str(c)) and os.path.isdir(os.path.join(self.rec, c))]
         if not cams:
             raise ValueError("escolha pelo menos uma câmera")
         tempos = [float(t) for t in (tempos or [])][:12]
         if not tempos:
             raise ValueError("horário inválido")
+        # se a câmera mudou de IP, as gravações daquele horário ficaram na pasta com o nome antigo:
+        # quando as câmeras pedidas não têm nada no horário, procura também nas outras pastas
+        if not any(self._seg_em(c, t) for c in cams for t in tempos):
+            try:
+                outras = [n for n in sorted(os.listdir(self.rec)) if n not in cams and ID_RE.match(n)
+                          and os.path.isdir(os.path.join(self.rec, n))]
+            except OSError:
+                outras = []
+            cams = cams + [c for c in outras if any(self._seg_em(c, t) for t in tempos)]
         trabalhos = [(c, t) for t in tempos for c in cams]
 
         def uma(ct):

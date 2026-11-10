@@ -161,10 +161,23 @@ def dir_size_bytes(path):
             except OSError: pass
     return total
 
+def cams_todas():
+    """Câmeras atuais + pastas de câmeras antigas em ui/rec (ex.: a câmera mudou de IP e ganhou outro nome).
+    As antigas também entram na retenção e no teto de disco — senão o espaço delas nunca é liberado e o
+    teto acaba apagando só as gravações das câmeras atuais."""
+    out = list(cams())
+    try:
+        for n in sorted(os.listdir(REC)):
+            if n not in out and re.match(r"^[\w-]{1,64}$", n) and os.path.isdir(os.path.join(REC, n)):
+                out.append(n)
+    except OSError:
+        pass
+    return out
+
 def all_segments():
-    # lista (cam, fname, path, epoch) de todos os .mp4
+    # lista (cam, fname, path, epoch) de todos os .mp4 (inclusive de câmeras antigas)
     segs = []
-    for cam in cams():
+    for cam in cams_todas():
         d = os.path.join(REC, cam)
         if not os.path.isdir(d): continue
         for f in os.listdir(d):
@@ -224,7 +237,8 @@ def _protegido(hs, t0, t1):
 
 def tick():
     os.makedirs(REC, exist_ok=True)
-    camlist = cams()
+    ativas = cams()
+    camlist = cams_todas()
     now = time.time()
     # mapa de índices por (cam, day)
     indices = {}
@@ -235,7 +249,7 @@ def tick():
         if not os.path.isdir(d): continue
         files = sorted(f for f in os.listdir(d) if f.endswith(".mp4"))
         if not files: continue
-        inprogress = files[-1]
+        inprogress = files[-1] if cam in ativas else None
         for f in files:
             e = seg_epoch(f)
             if not e: continue
@@ -309,9 +323,11 @@ def tick():
 
     # 4) salvar índices e manifest
     days = set()
+    dias_cam = {}
     for (cam, day), idx in indices.items():
         save_index(cam, day, idx)
-        if idx: days.add(day)
+        if idx:
+            days.add(day); dias_cam.setdefault(cam, set()).add(day)
     # dias existentes (mesmo sem alteração nesta volta)
     for cam in camlist:
         d = os.path.join(REC, cam)
@@ -321,13 +337,15 @@ def tick():
             for f in names:
                 if f.endswith(".json"):
                     if f[:-5] in have_mp4:
-                        days.add(f[:-5])
+                        days.add(f[:-5]); dias_cam.setdefault(cam, set()).add(f[:-5])
                     else:   # índice de um dia já sem vídeo (apagado): remove
                         try: _apagar(os.path.join(d, f))
                         except (OSError, RuntimeError): pass
     manifest = {
         "updated": round(now, 1),
-        "cams": [{"id": c} for c in camlist],
+        "cams": [{"id": c} for c in ativas],
+        # dias com gravação de cada câmera, inclusive das antigas (a Revisão mostra as antigas nos dias delas)
+        "dias_cam": {c: sorted(v) for c, v in sorted(dias_cam.items())},
         "days": sorted(days),
         "seg_seconds": SEG_SECONDS,
         "disk": {"used_gb": round(used_gb, 2), "cap_gb": CAP_GB, "free_gb": round(free_gb, 1)},
