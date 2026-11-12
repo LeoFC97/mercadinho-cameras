@@ -224,9 +224,8 @@ export function VendasPanel({ onClose, onVerCameras, autoBuscar }) {
           </div>
 
           <div class="vd-foot">
-            ${data ? html`<a class="vd-link" href=${'/api/vendas/planilha?dia=' + data.dia} download>${IC.dl} Baixar planilha</a>` : html`<span></span>`}
-            <span class="vd-muted">${data ? 'atualizado às ' + new Date(data.buscado_em * 1000).toTimeString().slice(0, 5) : ''}</span>
-            ${status?.conectado ? html`` : null}
+            ${data && !data.sem_planilha ? html`<a class="vd-link" href=${'/api/vendas/planilha?dia=' + data.dia} download>${IC.dl} Baixar planilha</a>` : html`<span></span>`}
+            <span class="vd-muted">${data && data.buscado_em ? 'atualizado às ' + new Date(data.buscado_em * 1000).toTimeString().slice(0, 5) : ''}</span>
           </div>`}
     </aside>`;
 }
