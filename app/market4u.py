@@ -319,7 +319,15 @@ class Market4u:
         with self.lock:
             return self._login(usuario, senha, mfa, authenticator, lembrar)
 
-    def _login(self, usuario, senha, mfa="", authenticator="", lembrar=True):
+    def _descartar_sessao(self, tudo=False):
+        """Remove a sessão PHP guardada (ou todos os cookies) para o próximo login começar do zero."""
+        for c in list(self.jar):
+            if tudo or c.name == "PHPSESSID":
+                try: self.jar.clear(c.domain, c.path, c.name)
+                except KeyError: pass
+        self._salvar_cookies()
+
+    def _login(self, usuario, senha, mfa="", authenticator="", lembrar=True, _tentativa=0):
         usuario = (usuario or "").strip()
         if not usuario or not senha:
             raise Market4uErro("informe o e-mail e a senha do market4u")
@@ -352,6 +360,12 @@ class Market4u:
                 raise Market4uErro("o market4u aceitou o login mas a sessão não abriu; tente de novo")
             self._marcar(usuario, senha, lembrar)
             return {"ok": True, "estado": 1, "msg": msg or "conectado"}
+        # "Esta tela ficou desatualizada porque a sua sessão mudou": o market4u recusou porque a
+        # sessão guardada (antiga) não bate com o hash do formulário. Descarta e tenta de novo:
+        # 1ª vez só a sessão PHP (mantém o vínculo do aparelho, evita pedir código), 2ª vez tudo.
+        if estado != 1 and _tentativa < 2 and re.search(r"sess[aã]o mudou|desatualizad|recarregad", msg, re.I):
+            self._descartar_sessao(tudo=_tentativa == 1)
+            return self._login(usuario, senha, mfa, authenticator, lembrar, _tentativa + 1)
         out = {"ok": False, "estado": estado, "msg": msg or "não foi possível entrar"}
         if estado in (2, 3):
             out["precisa_mfa"] = True
