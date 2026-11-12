@@ -27,13 +27,14 @@ const IC = {
 
 function Login({ status, onOk }) {
   const [sessao, setSessao] = useState('');
+  const [vinculo, setVinculo] = useState('');
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   const enviar = async (e) => {
     e.preventDefault(); setBusy(true); setMsg('');
     try {
       const r = await api('/api/vendas/sessao', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessao, ua: navigator.userAgent }) });
+        body: JSON.stringify({ sessao: 'PHPSESSID=' + sessao.trim().replace(/^PHPSESSID=/, '') + (vinculo.trim() ? '; M4U_VINCULO=' + vinculo.trim().replace(/^M4U_VINCULO=/, '') : ''), ua: navigator.userAgent }) });
       if (r.ok) { setSessao(''); onOk(); return; }
       setMsg(r.msg || 'Não foi possível conectar.');
     } catch (err) { setMsg(err.message); }
@@ -46,10 +47,11 @@ function Login({ status, onOk }) {
       <ol class="vd-passos">
         <li><a class="vd-link" href="https://app.market4u.com.br/" target="_blank" rel="noopener">Abra o app.market4u.com.br</a> e entre normalmente. De preferência no Chrome da própria loja.</li>
         <li>Na página do market4u aperte <b>F12</b> → aba <b>Aplicativo</b> (<i>Application</i>) → <b>Cookies</b> → <b>https://app.market4u.com.br</b>.</li>
-        <li>Clique na linha <b>PHPSESSID</b> e copie o <b>Valor</b> (embaixo da tabela).</li>
+        <li>Copie o <b>Valor</b> de duas linhas: <b>PHPSESSID</b> e <b>M4U_VINCULO</b> (clique na linha; o valor completo aparece embaixo da tabela).</li>
         <li>Cole aqui e clique em Conectar. Feche a aba do market4u sem clicar em <b>Sair</b> (sair encerra a sessão aqui também).</li>
       </ol>
-      <label>Sessão (PHPSESSID)<input autocomplete="off" spellcheck="false" placeholder="cole aqui o valor do PHPSESSID" value=${sessao} onInput=${e => setSessao(e.target.value)} required /></label>
+      <label>PHPSESSID<input autocomplete="off" spellcheck="false" placeholder="cole aqui o valor do PHPSESSID" value=${sessao} onInput=${e => setSessao(e.target.value)} required /></label>
+      <label>M4U_VINCULO<input autocomplete="off" spellcheck="false" placeholder="cole aqui o valor do M4U_VINCULO" value=${vinculo} onInput=${e => setVinculo(e.target.value)} /></label>
       ${msg ? html`<div class="vd-err">${msg}</div>` : null}
       <button class="vd-primary" disabled=${busy || !sessao.trim()}>${busy ? 'Conferindo…' : 'Conectar'}</button>
       <p class="vd-muted">O painel mantém a sessão ativa sozinho. Se ela cair (ex.: o market4u encerrar), esta tela volta e é só repetir.</p>

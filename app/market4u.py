@@ -468,11 +468,16 @@ class Market4u:
             if ua and len(ua) < 400:
                 c["ua"] = ua          # mesmo navegador em que a sessão foi aberta
             self._salvar_cfg(c)
-            if not self._esta_logado():
+            st, html, final = self._pagina("/relatorios/produtos-vendidos")
+            logado = st == 200 and "formLoginSistema" not in html and 'id="body-login"' not in html
+            if not logado:
                 c["conectado"] = False
                 self._salvar_cfg(c)
-                raise Market4uErro("o market4u não reconheceu essa sessão: confira se copiou o PHPSESSID "
-                                   "depois de entrar (e, se possível, faça isso no navegador da própria loja)")
+                faltou = "" if "M4U_VINCULO" in cookies else " Cole também o M4U_VINCULO (o market4u costuma exigir os dois)."
+                raise Market4uErro("o market4u não aceitou essa sessão aqui no servidor (respondeu "
+                                   f"HTTP {st}, {'tela de login' if 'formLoginSistema' in html or 'body-login' in html else 'página inesperada'})."
+                                   + faltou + " Se já colou os dois, entre no market4u pelo Chrome da própria "
+                                   "loja (o market4u pode amarrar a sessão à internet onde ela foi aberta).")
             c.update({"conectado": True, "desde": time.time(), "modo": "sessao"})
             self._salvar_cfg(c)
             self._salvar_cookies()
