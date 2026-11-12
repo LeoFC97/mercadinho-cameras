@@ -312,9 +312,7 @@ class Market4u:
     # --- sessão ---
     def status(self):
         c = self._cfg()
-        return {"usuario": c.get("usuario", ""), "lembrar": bool(c.get("senha")),
-                "conectado": bool(c.get("conectado")), "modo": c.get("modo", ""),
-                "desde": c.get("desde"), "visto": c.get("visto")}
+        return {"modo": "importacao", "conectado": True, "ultima_importacao": c.get("ultima_importacao")}
 
     def _esta_logado(self):
         st, html, final = self._pagina("/relatorios/produtos-vendidos")
@@ -613,16 +611,10 @@ class Market4u:
                     "resumo": resumo(itens), "cache": True, "velha": velha,
                     "transacoes": self.transacoes_guardadas(dia), "removidos": self.removidos_guardados(dia)}
         if os.path.isfile(path):
-            mt = os.path.getmtime(path)
-            fim_dia = time.mktime(dia.timetuple()) + 86400
-            if (dia < date.today() and mt > fim_dia + 600) or (time.time() - mt < max_idade):
-                return do_arquivo(False)
-        try:
-            return self.vendas(dia)
-        except Market4uErro:
-            if permitir_velho and os.path.isfile(path):
-                return do_arquivo(True)
-            raise
+            return do_arquivo(False)
+        return {"dia": alvo, "buscado_em": None, "itens": [], "resumo": resumo([]), "cache": True,
+                "sem_planilha": True, "transacoes": self.transacoes_guardadas(dia),
+                "removidos": self.removidos_guardados(dia)}
 
     # --- vários dias de uma vez (Dashboard) ---
     def _arq(self, dia, suf=""):
@@ -703,7 +695,11 @@ class Market4u:
             self._gravar_dia(self._arq(datetime.strptime(k, "%Y-%m-%d").date()), head, vendas[k])
 
     def garantir_vendas(self, de: date, ate: date, max_idade=600):
-        """Baixa as planilhas de vendas que faltam no período (blocos de até 62 dias). Devolve quantos dias baixou."""
+        """Modo importação: nada a baixar (o market4u não permite mais exportar fora da tela dele)."""
+        return 0
+
+    def _garantir_vendas_online(self, de: date, ate: date, max_idade=600):
+        """(antigo) Baixa as planilhas de vendas que faltam no período (blocos de até 62 dias)."""
         from datetime import timedelta
         ate = min(ate, date.today())
         falta, d = [], de
@@ -722,6 +718,10 @@ class Market4u:
         return len(falta)
 
     def baixar_detalhes(self, dia: date):
+        """Modo importação: transações e removidos chegam pela importação."""
+        return None
+
+    def _baixar_detalhes_online(self, dia: date):
         """Transações (clientes, pagamento) e removidos de um dia. O market4u é lento aqui (~10-15 s por dia),
         e essas exportações não usam o filtro da sessão, então não seguram a trava das outras consultas."""
         with self.lock:
@@ -729,6 +729,75 @@ class Market4u:
         self._transacoes(dia)
         self._removidos(dia)
         self._salvar_cookies()
+
+    # --- importação: o market4u bloqueou o acesso automático (captcha + exportação só pela tela),
+    #     então as planilhas vêm de quem exporta pela tela deles (upload no painel ou pasta Downloads) ---
+    TIPOS = {"vendas": "", "transacoes": "_transacoes", "removidos": "_removidos"}
+
+    @staticmethod
+    def _tipo(head):
+        h = set(head)
+        if {"Data e hora", "Nome do produto", "ID transação"} <= h: return "vendas", "Data e hora"
+        if "Data e hora" in h and ({"Forma pagamento", "Nome Cliente"} & h): return "transacoes", "Data e hora"
+        if {"Produto", "Data", "ID transação"} <= h: return "removidos", "Data"
+        return None, None
+
+    @staticmethod
+    def _iso(dh):
+        """'2026-11-12 14:03:05' fica igual; '12/11/2026 14:03(:05)' vira ISO."""
+        dh = (dh or "").strip()
+        m = re.match(r"^(\d{2})/(\d{2})/(\d{4})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?", dh)
+        if m:
+            d, mo, y, H, M, S = m.groups()
+            return f"{y}-{mo}-{d} {int(H):02d}:{M}:{S or '00'}"
+        return dh
+
+    def tipo_planilha(self, raw: bytes):
+        if raw[:2] == b"PK":
+            return None
+        head, _ = self._csv_linhas(raw[:20000])
+        return self._tipo([_limpa(x) for x in head])[0]
+
+    def importar(self, raw: bytes, nome=""):
+        """Importa uma planilha exportada do market4u (CSV ';'): Produtos vendidos, Transações ou
+        Produtos removidos. Divide por dia e junta com o que já havia (sem duplicar linhas)."""
+        if raw[:2] == b"PK":
+            raise Market4uErro("esse arquivo é Excel (.xlsx); exporte do market4u em CSV")
+        head, rows = self._csv_linhas(raw)
+        hl = [_limpa(x) for x in head]
+        tipo, col = self._tipo(hl)
+        if not tipo:
+            raise Market4uErro("não reconheci a planilha: use a exportação de Produtos vendidos, "
+                               "Transações ou Produtos removidos do market4u (CSV)")
+        ic = hl.index(col)
+        por_dia = {}
+        for r in rows:
+            if ic >= len(r): continue
+            r = list(r); r[ic] = self._iso(_limpa(r[ic]))
+            k = r[ic][:10]
+            if re.match(r"^\d{4}-\d{2}-\d{2}$", k):
+                por_dia.setdefault(k, []).append(r)
+        os.makedirs(os.path.join(self.dir, "vendas"), exist_ok=True)
+        with self.lock:
+            for k, novas in por_dia.items():
+                path = self._arq(datetime.strptime(k, "%Y-%m-%d").date(), self.TIPOS[tipo])
+                antigas = []
+                if os.path.isfile(path):
+                    h0, antigas = self._csv_linhas(open(path, "rb").read())
+                    if [_limpa(x) for x in h0] != hl:
+                        antigas = []            # formato mudou: fica só o novo
+                vistos, junto = set(), []
+                for r in antigas + novas:
+                    chave = tuple(_limpa(x) for x in r)
+                    if chave not in vistos:
+                        vistos.add(chave); junto.append(r)
+                junto.sort(key=lambda r: _limpa(r[ic]) if ic < len(r) else "", reverse=True)
+                self._gravar_dia(path, head, junto)
+            c = self._cfg()
+            c["ultima_importacao"] = {"quando": time.time(), "arquivo": os.path.basename(nome or "")[:120],
+                                      "tipo": tipo, "dias": sorted(por_dia), "linhas": len(rows)}
+            self._salvar_cfg(c)
+        return {"ok": True, "tipo": tipo, "dias": sorted(por_dia), "linhas": len(rows)}
 
     def planilha(self, dia: date):
         path = os.path.join(self.dir, "vendas", dia.strftime("%Y-%m-%d") + ".csv")

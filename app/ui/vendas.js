@@ -25,38 +25,21 @@ const IC = {
   ref: html`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.5 9a9 9 0 0 1 14.8-3.4L23 10M1 14l4.7 4.4A9 9 0 0 0 20.5 15"/></svg>`,
 };
 
-function Login({ status, onOk }) {
-  const [sessao, setSessao] = useState('');
-  const [vinculo, setVinculo] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState('');
-  const enviar = async (e) => {
-    e.preventDefault(); setBusy(true); setMsg('');
-    try {
-      const r = await api('/api/vendas/sessao', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessao: 'PHPSESSID=' + sessao.trim().replace(/^PHPSESSID=/, '') + (vinculo.trim() ? '; M4U_VINCULO=' + vinculo.trim().replace(/^M4U_VINCULO=/, '') : ''), ua: navigator.userAgent }) });
-      if (r.ok) { setSessao(''); onOk(); return; }
-      setMsg(r.msg || 'Não foi possível conectar.');
-    } catch (err) { setMsg(err.message); }
-    setBusy(false);
-  };
-  return html`
-    <form class="vd-login" onSubmit=${enviar}>
-      <h3>Conectar ao market4u</h3>
-      <p class="vd-muted">O login do market4u agora tem captcha, então quem entra é você, no navegador; o painel só reaproveita a sessão aberta (nenhuma senha fica guardada).</p>
-      <ol class="vd-passos">
-        <li><a class="vd-link" href="https://app.market4u.com.br/" target="_blank" rel="noopener">Abra o app.market4u.com.br</a> e entre normalmente. De preferência no Chrome da própria loja.</li>
-        <li>Na página do market4u aperte <b>F12</b> → aba <b>Aplicativo</b> (<i>Application</i>) → <b>Cookies</b> → <b>https://app.market4u.com.br</b>.</li>
-        <li>Copie o <b>Valor</b> de duas linhas: <b>PHPSESSID</b> e <b>M4U_VINCULO</b> (clique na linha; o valor completo aparece embaixo da tabela).</li>
-        <li>Cole aqui e clique em Conectar. Feche a aba do market4u sem clicar em <b>Sair</b> (sair encerra a sessão aqui também).</li>
-      </ol>
-      <label>PHPSESSID<input autocomplete="off" spellcheck="false" placeholder="cole aqui o valor do PHPSESSID" value=${sessao} onInput=${e => setSessao(e.target.value)} required /></label>
-      <label>M4U_VINCULO<input autocomplete="off" spellcheck="false" placeholder="cole aqui o valor do M4U_VINCULO" value=${vinculo} onInput=${e => setVinculo(e.target.value)} /></label>
-      ${msg ? html`<div class="vd-err">${msg}</div>` : null}
-      <button class="vd-primary" disabled=${busy || !sessao.trim()}>${busy ? 'Conferindo…' : 'Conectar'}</button>
-      <p class="vd-muted">O painel mantém a sessão ativa sozinho. Se ela cair (ex.: o market4u encerrar), esta tela volta e é só repetir.</p>
-    </form>`;
+// Importação: o market4u não permite mais exportar fora da tela dele, então a planilha vem de
+// quem exporta (upload aqui, ou sozinha quando exportada no Chrome da loja -> pasta Downloads).
+async function importarArquivos(files) {
+  const res = [];
+  for (const f of files) {
+    const r = await fetch('/api/vendas/importar', { method: 'POST', body: f,
+      headers: { 'Content-Type': 'application/octet-stream', 'X-Nome-Arquivo': encodeURIComponent(f.name) } });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(`${f.name}: ${j.erro || ('HTTP ' + r.status)}`);
+    res.push(j);
+  }
+  return res;
 }
+const NOME_TIPO = { vendas: 'Produtos vendidos', transacoes: 'Transações', removidos: 'Produtos removidos' };
+const quando = ts => { const d = new Date(ts * 1000); return `${two(d.getDate())}/${two(d.getMonth() + 1)} ${two(d.getHours())}:${two(d.getMinutes())}`; };
 
 // "N removido(s) ▸": abre a lista do que a pessoa tirou do carrinho nessa transação
 function nRemovidos(tx, lista) { return Math.max(lista ? lista.length : 0, parseInt(tx && tx.removidos, 10) || 0); }
@@ -81,7 +64,9 @@ export function VendasPanel({ onClose, onVerCameras, autoBuscar }) {
   const [data, setData] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
-  const [precisaLogin, setPrecisaLogin] = useState(false);
+  const [importando, setImportando] = useState(false);
+  const [okMsg, setOkMsg] = useState('');
+  const arq = useRef(null);
   const [busca, setBusca] = useState('');
   const [soIdent, setSoIdent] = useState(false);
   const [abertos, setAbertos] = useState(() => new Set());   // transações com a lista de removidos aberta
@@ -89,7 +74,7 @@ export function VendasPanel({ onClose, onVerCameras, autoBuscar }) {
   const pedido = useRef(0);
 
   const carregarStatus = async () => {
-    try { const s = await api('/api/vendas/status?_=' + Date.now()); setStatus(s); setPrecisaLogin(!s.conectado); return s; }
+    try { const s = await api('/api/vendas/status?_=' + Date.now()); setStatus(s); return s; }
     catch (e) { setErr(e.message); return null; }
   };
   const buscar = async (d = dia) => {
@@ -98,16 +83,26 @@ export function VendasPanel({ onClose, onVerCameras, autoBuscar }) {
     try {
       const r = await api('/api/vendas?dia=' + d + '&_=' + Date.now());
       if (id !== pedido.current) return;
-      setData(r); setPrecisaLogin(false);
+      setData(r);
     } catch (e) {
       if (id !== pedido.current) return;
-      if (e.precisaLogin) { setPrecisaLogin(true); carregarStatus(); }
       setErr(e.message);
     }
     if (id === pedido.current) setBusy(false);
   };
 
-  useEffect(() => { (async () => { const s = await carregarStatus(); if (s && s.conectado) buscar(); })(); }, [autoBuscar]);
+  useEffect(() => { carregarStatus(); buscar(); }, [autoBuscar]);
+  const importar = async (files) => {
+    if (!files || !files.length) return;
+    setImportando(true); setErr(''); setOkMsg('');
+    try {
+      const rs = await importarArquivos([...files]);
+      setOkMsg(rs.map(r => `${NOME_TIPO[r.tipo] || r.tipo}: ${r.linhas} linha(s) em ${r.dias.length} dia(s)`).join(' · '));
+      await carregarStatus(); await buscar();
+    } catch (e) { setErr(e.message); }
+    setImportando(false);
+    if (arq.current) arq.current.value = '';
+  };
 
   const mudarDia = (d) => { setDia(d); setData(null); buscar(d); };
   const sair = async () => { await api('/api/vendas/sair', { method: 'POST' }).catch(() => {}); setData(null); carregarStatus(); };
@@ -148,21 +143,24 @@ export function VendasPanel({ onClose, onVerCameras, autoBuscar }) {
         <button class="iconbtn" title="Fechar" onClick=${onClose}>${IC.x}</button>
       </div>
 
-      ${precisaLogin
-        ? html`<div class="vd-body">
-            ${err && !/conecte/i.test(err) ? html`<div class="vd-err">${err}</div>` : null}
-            <${Login} status=${status} onOk=${() => { setErr(''); carregarStatus().then(() => buscar()); }} />
-          </div>`
-        : html`
+      ${html`
           <div class="vd-bar">
             <div class="seg">
               <button onClick=${() => mudarDia(addDays(dia, -1))} title="Dia anterior">◀</button>
               <button class="on" style=${{ cursor: 'default' }}>${dia === hoje ? 'Hoje' : brDay(dia)}</button>
               <button onClick=${() => mudarDia(addDays(dia, 1))} disabled=${dia >= hoje} title="Próximo dia">▶</button>
             </div>
-            <button class="vd-primary vd-buscar" onClick=${() => buscar()} disabled=${busy}>
-              ${IC.ref}<span>${busy ? 'Buscando…' : 'Buscar últimas vendas'}</span></button>
+            <button class="vd-primary vd-buscar" onClick=${() => arq.current && arq.current.click()} disabled=${importando}>
+              ${IC.dl}<span>${importando ? 'Importando…' : 'Importar planilha'}</span></button>
+            <input ref=${arq} type="file" accept=".csv,text/csv" multiple style=${{ display: 'none' }} onChange=${e => importar(e.target.files)} />
           </div>
+          <div class="vd-imp vd-muted">
+            ${status && status.ultima_importacao
+              ? html`Última importação: <b>${quando(status.ultima_importacao.quando)}</b> (${NOME_TIPO[status.ultima_importacao.tipo] || ''}${status.ultima_importacao.arquivo ? ' · ' + status.ultima_importacao.arquivo : ''}).`
+              : html`Nenhuma planilha importada ainda.`}
+            ${' '}Exporte no market4u (Relatórios → Produtos vendidos → exportar CSV). Exportando no Chrome da loja, entra sozinho em até 20 s; de outro lugar, use “Importar planilha”.
+          </div>
+          ${okMsg ? html`<div class="vd-okmsg">✓ ${okMsg}</div>` : null}
 
           ${r ? html`<div class="vd-cards">
               <div><small>Total</small><b>${brl(r.total)}</b></div>
@@ -180,8 +178,8 @@ export function VendasPanel({ onClose, onVerCameras, autoBuscar }) {
           ${data ? html`<div class="vd-search"><input placeholder="Filtrar produto, código ou cliente…" value=${busca} onInput=${e => setBusca(e.target.value)} /></div>` : null}
 
           <div class="vd-list">
-            ${!data && busy ? html`<div class="vd-empty"><div class="spin"></div><span>Baixando a planilha do market4u…</span></div>` : null}
-            ${data && !grupos.length ? html`<div class="vd-empty"><span>${busca ? 'Nada encontrado com esse filtro.' : 'Nenhuma venda nesse dia.'}</span></div>` : null}
+            ${!data && busy ? html`<div class="vd-empty"><div class="spin"></div><span>Carregando…</span></div>` : null}
+            ${data && !grupos.length ? html`<div class="vd-empty"><span>${busca ? 'Nada encontrado com esse filtro.' : data.sem_planilha ? 'Ainda não há planilha deste dia. Exporte no market4u e importe aqui.' : 'Nenhuma venda nesse dia.'}</span></div>` : null}
             ${grupos.map(g => html`
               <div class="vd-tx" key=${g.k}>
                 <div class="vd-txh">
@@ -227,8 +225,8 @@ export function VendasPanel({ onClose, onVerCameras, autoBuscar }) {
 
           <div class="vd-foot">
             ${data ? html`<a class="vd-link" href=${'/api/vendas/planilha?dia=' + data.dia} download>${IC.dl} Baixar planilha</a>` : html`<span></span>`}
-            <span class="vd-muted">${data ? 'buscado às ' + new Date(data.buscado_em * 1000).toTimeString().slice(0, 5) : ''}</span>
-            ${status?.conectado ? html`<button class="vd-link" onClick=${sair} title=${'Conectado como ' + (status.usuario || '')}>Desconectar</button>` : null}
+            <span class="vd-muted">${data ? 'atualizado às ' + new Date(data.buscado_em * 1000).toTimeString().slice(0, 5) : ''}</span>
+            ${status?.conectado ? html`` : null}
           </div>`}
     </aside>`;
 }

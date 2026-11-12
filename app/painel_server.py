@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # painel_server.py — serve a pasta ui/ (painel + gravações) com tipos MIME certos e sem log por requisição.
 # Também expõe a API de disco (/api/disk) usada pela tela "Disco" do painel para apagar gravações.
-import sys, os, re, json, shutil, functools, time, threading
+import sys, os, re, json, shutil, functools, time, threading, urllib.parse
 from http.server import ThreadingHTTPServer, SimpleHTTPRequestHandler
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -557,7 +557,7 @@ class Handler(SimpleHTTPRequestHandler):
             if clean == "/api/vendas/status":
                 return self._json(200, m4u().status())
             if clean == "/api/vendas":
-                return self._json(200, m4u().vendas(_dia_param(self.path)))
+                return self._json(200, m4u().vendas_cache(_dia_param(self.path)))
             if clean == "/api/vendas/horarios":
                 # usado pelo gravador: horários de venda do dia (planilha guardada vale por 10 min)
                 r = m4u().vendas_cache(_dia_param(self.path), max_idade=600, permitir_velho=True)
@@ -585,6 +585,18 @@ class Handler(SimpleHTTPRequestHandler):
             return self._json(500, {"erro": f"erro inesperado: {e}"})
     def _vendas_post(self, clean):
         import market4u
+        if clean == "/api/vendas/importar":
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+                if n <= 0 or n > 60 * 1024 * 1024:
+                    return self._json(400, {"ok": False, "erro": "arquivo vazio ou grande demais (máx. 60 MB)"})
+                raw = self.rfile.read(n)
+                nome = urllib.parse.unquote(self.headers.get("X-Nome-Arquivo") or "")
+                return self._json(200, m4u().importar(raw, nome))
+            except market4u.Market4uErro as e:
+                return self._json(400, {"ok": False, "erro": str(e)})
+            except Exception as e:
+                return self._json(500, {"ok": False, "erro": f"erro inesperado: {e}"})
         try:
             n = int(self.headers.get("Content-Length") or 0)
             req = json.loads(self.rfile.read(n) or b"{}") if n else {}
@@ -593,6 +605,8 @@ class Handler(SimpleHTTPRequestHandler):
                                 req.get("authenticator", ""), bool(req.get("lembrar", True)))
                 return self._json(200, r)
             if clean == "/api/vendas/sessao":
+                return self._json(410, {"ok": False, "msg": "o market4u não permite mais conexão automática; importe a planilha"})
+            if clean == "/api/vendas/sessao_antiga":
                 return self._json(200, m4u().usar_sessao(req.get("sessao", ""), req.get("ua", "")))
             if clean == "/api/vendas/sair":
                 m4u().sair()
@@ -714,15 +728,68 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_header("Cache-Control", "no-cache")
         super().end_headers()
 
-def _manter_market4u_vivo():
-    """A cada 10 min toca a sessão do market4u para ela não expirar por inatividade."""
+def _pastas_downloads():
+    """Pastas vigiadas: IMPORTAR_DE (separadas por ;) ou o Downloads de cada usuário da máquina."""
+    env = os.environ.get("IMPORTAR_DE", "").strip()
+    if env:
+        return [p for p in env.split(";") if os.path.isdir(p)]
+    bases = [os.path.join(os.environ.get("SystemDrive", "C:") + os.sep, "Users")] if os.name == "nt" else ["/home", "/Users"]
+    out = []
+    for b in bases:
+        try:
+            for u in os.listdir(b):
+                d = os.path.join(b, u, "Downloads")
+                if os.path.isdir(d): out.append(d)
+        except OSError:
+            pass
+    return out
+
+def _vigiar_downloads():
+    """Importa sozinho as planilhas do market4u exportadas no navegador desta máquina."""
+    vistos_f = os.path.join(DADOS, "importados.json")
+    try: vistos = json.load(open(vistos_f, encoding="utf-8"))
+    except Exception: vistos = {}
+    primeira = not vistos
     while True:
-        time.sleep(600)
-        try: m4u().manter_viva()
-        except Exception: pass
+        try:
+            mudou = False
+            for pasta in _pastas_downloads():
+                for nome in os.listdir(pasta):
+                    if not nome.lower().endswith(".csv"): continue
+                    p = os.path.join(pasta, nome)
+                    try: st = os.stat(p)
+                    except OSError: continue
+                    if st.st_size > 60 * 1024 * 1024 or time.time() - st.st_mtime < 3: continue
+                    chave = f"{p}|{int(st.st_mtime)}|{st.st_size}"
+                    if chave in vistos: continue
+                    vistos[chave] = time.time(); mudou = True
+                    if primeira and time.time() - st.st_mtime > 3 * 86400:
+                        continue        # na primeira vez não reimporta arquivos antigos
+                    try:
+                        raw = open(p, "rb").read()
+                        if m4u().tipo_planilha(raw):
+                            r = m4u().importar(raw, nome)
+                            print(f"importado de {pasta}: {nome} ({r['tipo']}, {len(r['dias'])} dia(s))", flush=True)
+                    except Exception as e:
+                        print(f"falha ao importar {p}: {e}", flush=True)
+            primeira = False
+            if mudou:
+                if len(vistos) > 2000:
+                    vistos = dict(sorted(vistos.items(), key=lambda kv: kv[1])[-1000:])
+                tmp = vistos_f + ".tmp"
+                json.dump(vistos, open(tmp, "w", encoding="utf-8")); os.replace(tmp, vistos_f)
+        except Exception as e:
+            print(f"vigia de downloads: {e}", flush=True)
+        time.sleep(20)
 
 if __name__ == "__main__":
-    threading.Thread(target=_manter_market4u_vivo, daemon=True).start()
+    try:   # o market4u não aceita mais conexão automática: nada de tentar entrar em segundo plano
+        _c = m4u()._cfg()
+        if _c.get("conectado") or _c.get("senha"):
+            _c["conectado"] = False; _c.pop("senha", None); m4u()._salvar_cfg(_c)
+    except Exception:
+        pass
+    threading.Thread(target=_vigiar_downloads, daemon=True).start()
     ThreadingHTTPServer.daemon_threads = True
     srv = ThreadingHTTPServer(("0.0.0.0", PORT), functools.partial(Handler, directory=UI))
     print(f"painel em http://0.0.0.0:{PORT}  (pasta {UI})", flush=True)
