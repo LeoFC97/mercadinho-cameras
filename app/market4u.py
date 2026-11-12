@@ -279,7 +279,7 @@ class Market4u:
         url = path if path.startswith("http") else BASE + path
         body = urllib.parse.urlencode(data).encode() if isinstance(data, dict) else data
         rq = urllib.request.Request(url, data=body, method="POST" if body is not None else "GET")
-        rq.add_header("User-Agent", UA)
+        rq.add_header("User-Agent", self._cfg().get("ua") or UA)
         rq.add_header("Accept-Language", "pt-BR,pt;q=0.9")
         if referer:
             rq.add_header("Referer", BASE + referer)
@@ -313,7 +313,8 @@ class Market4u:
     def status(self):
         c = self._cfg()
         return {"usuario": c.get("usuario", ""), "lembrar": bool(c.get("senha")),
-                "conectado": bool(c.get("conectado"))}
+                "conectado": bool(c.get("conectado")), "modo": c.get("modo", ""),
+                "desde": c.get("desde"), "visto": c.get("visto")}
 
     def _esta_logado(self):
         st, html, final = self._pagina("/relatorios/produtos-vendidos")
@@ -420,7 +421,75 @@ class Market4u:
                                + r.get("msg", ""))
         c["conectado"] = False
         self._salvar_cfg(c)
-        raise PrecisaLogin("conecte o painel ao market4u (sessão expirada ou ainda não conectada)")
+        raise PrecisaLogin("a sessão do market4u expirou ou ainda não foi conectada: entre no "
+                           "app.market4u.com.br e cole a sessão no painel")
+
+    # --- sessão aberta por uma pessoa no navegador (o login do market4u tem captcha) ---
+    _NOME_OK = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
+    _VALOR_OK = re.compile(r"^[A-Za-z0-9,\-_.%]{8,512}$")
+
+    @classmethod
+    def _ler_cookies(cls, texto):
+        """Aceita: só o valor do PHPSESSID; 'PHPSESSID=...; M4U_VINCULO=...'; ou linhas copiadas
+        da tabela de cookies do DevTools (nome<TAB>valor<TAB>domínio...)."""
+        texto = (texto or "").strip().strip('"').strip("'")
+        out = {}
+        if "\t" in texto:
+            for ln in texto.splitlines():
+                cols = [c.strip() for c in ln.split("\t")]
+                if len(cols) >= 2: out[cols[0]] = cols[1]
+        elif "=" in texto:
+            for parte in re.split(r"[;\n]", texto):
+                if "=" in parte:
+                    k, v = parte.split("=", 1)
+                    out[k.strip()] = v.strip().strip('"')
+        elif texto:
+            out["PHPSESSID"] = texto
+        out = {k: v for k, v in out.items() if cls._NOME_OK.match(k) and cls._VALOR_OK.match(v)}
+        if "PHPSESSID" not in out:
+            raise Market4uErro("não achei o PHPSESSID no que foi colado: copie o valor do cookie PHPSESSID")
+        return out
+
+    def usar_sessao(self, texto, ua=""):
+        """Passa a usar a sessão que a pessoa abriu no navegador (depois de resolver o captcha)."""
+        import http.cookiejar as cj
+        cookies = self._ler_cookies(texto)
+        with self.lock:
+            dominio = urllib.parse.urlparse(BASE).hostname
+            for c in list(self.jar):
+                if c.name in cookies:
+                    try: self.jar.clear(c.domain, c.path, c.name)
+                    except KeyError: pass
+            for nome, valor in cookies.items():
+                self.jar.set_cookie(cj.Cookie(0, nome, valor, None, False, dominio, False, False, "/", True,
+                                              True, None, nome == "PHPSESSID", None, None, {"HttpOnly": None}))
+            c = self._cfg()
+            c.pop("senha", None)
+            if ua and len(ua) < 400:
+                c["ua"] = ua          # mesmo navegador em que a sessão foi aberta
+            self._salvar_cfg(c)
+            if not self._esta_logado():
+                c["conectado"] = False
+                self._salvar_cfg(c)
+                raise Market4uErro("o market4u não reconheceu essa sessão: confira se copiou o PHPSESSID "
+                                   "depois de entrar (e, se possível, faça isso no navegador da própria loja)")
+            c.update({"conectado": True, "desde": time.time(), "modo": "sessao"})
+            self._salvar_cfg(c)
+            self._salvar_cookies()
+            return {"ok": True, "msg": "conectado"}
+
+    def manter_viva(self):
+        """Toca a sessão de tempos em tempos para ela não expirar por inatividade."""
+        if not self._cfg().get("conectado"):
+            return False
+        with self.lock:
+            ok = self._esta_logado()
+            c = self._cfg()
+            c["conectado"] = ok
+            if ok: c["visto"] = time.time()
+            self._salvar_cfg(c)
+            if ok: self._salvar_cookies()
+            return ok
 
     # --- relatório ---
     def vendas(self, dia: date):

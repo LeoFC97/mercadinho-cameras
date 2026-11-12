@@ -592,6 +592,8 @@ class Handler(SimpleHTTPRequestHandler):
                 r = m4u().login(req.get("usuario", ""), req.get("senha", ""), req.get("mfa", ""),
                                 req.get("authenticator", ""), bool(req.get("lembrar", True)))
                 return self._json(200, r)
+            if clean == "/api/vendas/sessao":
+                return self._json(200, m4u().usar_sessao(req.get("sessao", ""), req.get("ua", "")))
             if clean == "/api/vendas/sair":
                 m4u().sair()
                 return self._json(200, {"ok": True})
@@ -712,7 +714,15 @@ class Handler(SimpleHTTPRequestHandler):
             self.send_header("Cache-Control", "no-cache")
         super().end_headers()
 
+def _manter_market4u_vivo():
+    """A cada 10 min toca a sessão do market4u para ela não expirar por inatividade."""
+    while True:
+        time.sleep(600)
+        try: m4u().manter_viva()
+        except Exception: pass
+
 if __name__ == "__main__":
+    threading.Thread(target=_manter_market4u_vivo, daemon=True).start()
     ThreadingHTTPServer.daemon_threads = True
     srv = ThreadingHTTPServer(("0.0.0.0", PORT), functools.partial(Handler, directory=UI))
     print(f"painel em http://0.0.0.0:{PORT}  (pasta {UI})", flush=True)

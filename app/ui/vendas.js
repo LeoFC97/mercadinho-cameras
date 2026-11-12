@@ -26,38 +26,33 @@ const IC = {
 };
 
 function Login({ status, onOk }) {
-  const [usuario, setUsuario] = useState(status?.usuario || '');
-  const [senha, setSenha] = useState('');
-  const [mfa, setMfa] = useState('');
-  const [precisaMfa, setPrecisaMfa] = useState(false);
-  const [auth, setAuth] = useState('');
-  const [qr, setQr] = useState('');
-  const [lembrar, setLembrar] = useState(true);
+  const [sessao, setSessao] = useState('');
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState('');
   const enviar = async (e) => {
     e.preventDefault(); setBusy(true); setMsg('');
     try {
-      const r = await api('/api/vendas/login', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ usuario, senha, mfa, authenticator: auth, lembrar }) });
-      if (r.ok) { setSenha(''); onOk(); return; }
-      if (r.precisa_mfa) { setPrecisaMfa(true); if (r.authenticator) setAuth(r.authenticator); if (r.qrcode) setQr(r.qrcode); }
-      setMsg(r.msg || 'Não foi possível entrar.');
+      const r = await api('/api/vendas/sessao', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessao, ua: navigator.userAgent }) });
+      if (r.ok) { setSessao(''); onOk(); return; }
+      setMsg(r.msg || 'Não foi possível conectar.');
     } catch (err) { setMsg(err.message); }
     setBusy(false);
   };
   return html`
     <form class="vd-login" onSubmit=${enviar}>
       <h3>Conectar ao market4u</h3>
-      <p class="vd-muted">Use o mesmo login do app.market4u.com.br. A conexão fica só no servidor da loja.</p>
-      <label>E-mail<input type="email" autocomplete="username" value=${usuario} onInput=${e => setUsuario(e.target.value)} required /></label>
-      <label>Senha<input type="password" autocomplete="current-password" value=${senha} onInput=${e => setSenha(e.target.value)} required /></label>
-      ${qr ? html`<img class="vd-qr" src=${qr} alt="QR code do autenticador" />` : null}
-      ${precisaMfa ? html`<label>Código de verificação<input inputmode="numeric" autocomplete="one-time-code" value=${mfa} onInput=${e => setMfa(e.target.value)} autofocus /></label>` : null}
-      <label class="vd-check"><input type="checkbox" checked=${lembrar} onChange=${e => setLembrar(e.target.checked)} />
-        Lembrar a senha neste servidor (reconecta sozinho quando a sessão expira)</label>
+      <p class="vd-muted">O login do market4u agora tem captcha, então quem entra é você, no navegador; o painel só reaproveita a sessão aberta (nenhuma senha fica guardada).</p>
+      <ol class="vd-passos">
+        <li><a class="vd-link" href="https://app.market4u.com.br/" target="_blank" rel="noopener">Abra o app.market4u.com.br</a> e entre normalmente. De preferência no Chrome da própria loja.</li>
+        <li>Na página do market4u aperte <b>F12</b> → aba <b>Aplicativo</b> (<i>Application</i>) → <b>Cookies</b> → <b>https://app.market4u.com.br</b>.</li>
+        <li>Clique na linha <b>PHPSESSID</b> e copie o <b>Valor</b> (embaixo da tabela).</li>
+        <li>Cole aqui e clique em Conectar. Feche a aba do market4u sem clicar em <b>Sair</b> (sair encerra a sessão aqui também).</li>
+      </ol>
+      <label>Sessão (PHPSESSID)<input autocomplete="off" spellcheck="false" placeholder="cole aqui o valor do PHPSESSID" value=${sessao} onInput=${e => setSessao(e.target.value)} required /></label>
       ${msg ? html`<div class="vd-err">${msg}</div>` : null}
-      <button class="vd-primary" disabled=${busy}>${busy ? 'Conectando…' : 'Conectar'}</button>
+      <button class="vd-primary" disabled=${busy || !sessao.trim()}>${busy ? 'Conferindo…' : 'Conectar'}</button>
+      <p class="vd-muted">O painel mantém a sessão ativa sozinho. Se ela cair (ex.: o market4u encerrar), esta tela volta e é só repetir.</p>
     </form>`;
 }
 
