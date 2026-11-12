@@ -29,6 +29,10 @@ class PrecisaLogin(Market4uErro):
     pass
 
 
+CAPTCHA_MSG = ("o market4u passou a exigir captcha (\"não sou um robô\") no login, então o servidor não "
+               "consegue mais entrar sozinho com e-mail e senha")
+
+
 # ---------- proteção da senha guardada ----------
 def _dpapi(data: bytes, proteger: bool) -> bytes:
     """CryptProtectData/CryptUnprotectData do Windows (só o mesmo usuário/máquina abre)."""
@@ -339,6 +343,10 @@ class Market4u:
             # já havia sessão válida
             self._marcar(usuario, senha, lembrar)
             return {"ok": True, "estado": 1, "msg": "já conectado"}
+        if "hcaptcha" in html.lower():
+            # não envia a senha: sem o captcha resolvido por uma pessoa o market4u recusa, e
+            # tentativas repetidas podem bloquear a conta
+            return {"ok": False, "estado": 0, "captcha": True, "msg": CAPTCHA_MSG}
         st, hd, body, _ = self._req("/login/request", {
             "usuario": usuario, "senha": senha, "nova_senha": "",
             "AUTHENTICATOR": authenticator or "", "MFA": mfa or "", "CELULAR": "",
@@ -360,12 +368,6 @@ class Market4u:
                 raise Market4uErro("o market4u aceitou o login mas a sessão não abriu; tente de novo")
             self._marcar(usuario, senha, lembrar)
             return {"ok": True, "estado": 1, "msg": msg or "conectado"}
-        # "Esta tela ficou desatualizada porque a sua sessão mudou": o market4u recusou porque a
-        # sessão guardada (antiga) não bate com o hash do formulário. Descarta e tenta de novo:
-        # 1ª vez só a sessão PHP (mantém o vínculo do aparelho, evita pedir código), 2ª vez tudo.
-        if estado != 1 and _tentativa < 2 and re.search(r"sess[aã]o mudou|desatualizad|recarregad", msg, re.I):
-            self._descartar_sessao(tudo=_tentativa == 1)
-            return self._login(usuario, senha, mfa, authenticator, lembrar, _tentativa + 1)
         out = {"ok": False, "estado": estado, "msg": msg or "não foi possível entrar"}
         if estado in (2, 3):
             out["precisa_mfa"] = True
@@ -409,6 +411,10 @@ class Market4u:
             if r.get("ok"):
                 return
             c["conectado"] = False
+            if r.get("captcha"):
+                c.pop("senha", None)          # senha guardada não serve mais: não tenta de novo
+                self._salvar_cfg(c)
+                raise PrecisaLogin(CAPTCHA_MSG)
             self._salvar_cfg(c)
             raise PrecisaLogin("a sessão do market4u expirou e o login automático pediu verificação: "
                                + r.get("msg", ""))
